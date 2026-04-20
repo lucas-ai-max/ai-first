@@ -334,7 +334,7 @@ export async function runTestBattery(parentTaskId: string): Promise<void> {
 
   if (missingFields.length > 0) {
     console.log(`[testes] Missing fields: ${missingFields.join(", ")}`);
-    await postComment(parentTaskId,
+    await testsPostComment(parentTaskId,
       `Faltam informações pra rodar os testes:\n\n${missingFields.map((f) => `- ${f} tá vazio`).join("\n")}\n\nPreenche e manda de novo pra preparação.`);
     await testsUpdateTaskStatus(parentTaskId, "backlog de testes");
     return;
@@ -361,7 +361,7 @@ export async function runTestBattery(parentTaskId: string): Promise<void> {
   console.log(`[testes] scenarios.length = ${scenarios.length}`);
   if (scenarios.length === 0) {
     console.log(`[testes] scenarios array is empty, aborting`);
-    await postComment(parentTaskId, "Não consegui identificar nenhum cenário no texto. Descreve os cenários que quer testar e manda de novo.");
+    await testsPostComment(parentTaskId, "Não consegui identificar nenhum cenário no texto. Descreve os cenários que quer testar e manda de novo.");
     await testsUpdateTaskStatus(parentTaskId, "backlog de testes");
     return;
   }
@@ -377,7 +377,7 @@ export async function runTestBattery(parentTaskId: string): Promise<void> {
   });
   scenariosSummary += `Instâncias: ${instances.map((i) => i.nome).join(", ")}`;
 
-  await postComment(parentTaskId, scenariosSummary);
+  await testsPostComment(parentTaskId, scenariosSummary);
 
   // 4. Extrair assignees e datas da task-mãe pra propagar nas subtasks
   const parentAssignees = parentTask.assignees?.map((a) => a.id) ?? [];
@@ -442,7 +442,7 @@ export async function runTestBattery(parentTaskId: string): Promise<void> {
       });
     } catch (err) {
       console.error(`[testes] Erro ao criar/reusar subtask ${i + 1}:`, err);
-      await postComment(parentTaskId,
+      await testsPostComment(parentTaskId,
         `⚠️ Erro ao processar subtask "${scenario.nome}": ${err instanceof Error ? err.message : String(err)}`);
     }
   }
@@ -451,17 +451,17 @@ export async function runTestBattery(parentTaskId: string): Promise<void> {
     ? ` Responsáveis copiados da task-mãe.`
     : ` (Preencha responsáveis e datas na task-mãe pra copiar nas subtasks)`;
 
-  await postComment(parentTaskId,
+  await testsPostComment(parentTaskId,
     `Criei ${subtaskContexts.length} subtasks, distribuídas em ${instances.length} instância(s).${assignmentMsg}`);
 
   if (subtaskContexts.length === 0) {
-    await postComment(parentTaskId, "Nenhuma subtask criou com sucesso. Verifica os dados e tenta de novo.");
+    await testsPostComment(parentTaskId, "Nenhuma subtask criou com sucesso. Verifica os dados e tenta de novo.");
     await testsUpdateTaskStatus(parentTaskId, "erro");
     return;
   }
 
   // Mudar task-mãe pra "Em Execução"
-  await updateTaskStatus(parentTaskId, "em execução");
+  await testsUpdateTaskStatus(parentTaskId, "em execução");
 
   // 6. Agrupar subtasks por instância pra serializar dentro de cada uma
   //    Paralelo ENTRE instâncias, sequencial DENTRO da mesma instância
@@ -474,7 +474,7 @@ export async function runTestBattery(parentTaskId: string): Promise<void> {
   }
 
   console.log(`[testes] Disparando ${subtaskContexts.length} testes (${instanceQueues.size} instância(s), sequencial por instância)...`);
-  await postComment(parentTaskId,
+  await testsPostComment(parentTaskId,
     `Iniciando ${subtaskContexts.length} testes em ${instanceQueues.size} instância(s). Cenários na mesma instância rodam um de cada vez.`);
 
   const subtaskResults: SubtaskResult[] = [];
@@ -494,7 +494,7 @@ export async function runTestBattery(parentTaskId: string): Promise<void> {
         console.log(`[testes] Dispatch succeeded for ${ctx.subtaskId}, sessionId: ${ctx.sessionId}`);
       } catch (err) {
         console.error(`[testes] Dispatch failed for ${ctx.subtaskId}:`, err instanceof Error ? err.message : String(err));
-        await postComment(ctx.subtaskId,
+        await testsPostComment(ctx.subtaskId,
           `Falha ao disparar teste: ${err instanceof Error ? err.message : String(err)}`);
         await testsUpdateTaskStatus(ctx.subtaskId, "erro");
         results.push({
@@ -533,7 +533,7 @@ export async function runTestBattery(parentTaskId: string): Promise<void> {
           }
         }
 
-        await postComment(ctx.subtaskId,
+        await testsPostComment(ctx.subtaskId,
           `⏱️ Teste não completou em tempo hábil (${testTimeoutMs / 1000}s). ${errorMsg}`);
         await testsUpdateTaskStatus(ctx.subtaskId, "erro");
 
@@ -562,7 +562,7 @@ export async function runTestBattery(parentTaskId: string): Promise<void> {
   const successCount = subtaskResults.filter((r) => r.status !== "erro").length;
   const errorCount = subtaskResults.filter((r) => r.status === "erro").length;
   if (errorCount > 0) {
-    await postComment(parentTaskId,
+    await testsPostComment(parentTaskId,
       `Testes finalizados: ${successCount} ok, ${errorCount} com erro.`);
   }
 
@@ -636,11 +636,11 @@ async function dispatchTest(
   }
   const sessionId = await startTest(payload);
 
-  const task = await getTask(ctx.subtaskId);
+  const task = await testsGetTask(ctx.subtaskId);
   const sessionFieldId = getCustomFieldId(task, "sessão testa-ai") ??
     getCustomFieldId(task, "sessao testa-ai");
   if (sessionFieldId) {
-    await updateCustomField(ctx.subtaskId, sessionFieldId, sessionId);
+    await testsUpdateCustomField(ctx.subtaskId, sessionFieldId, sessionId);
   }
 
   return sessionId;
@@ -792,7 +792,7 @@ async function waitForTestCompletion(ctx: SubtaskContext): Promise<SubtaskResult
       }
     }
 
-    await postComment(ctx.subtaskId, `⏱️ Erro ao aguardar teste: ${errorMsg}`);
+    await testsPostComment(ctx.subtaskId, `⏱️ Erro ao aguardar teste: ${errorMsg}`);
     await testsUpdateTaskStatus(ctx.subtaskId, "erro");
 
     return {
