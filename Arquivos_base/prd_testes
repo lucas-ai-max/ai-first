@@ -1,0 +1,452 @@
+# PRD — Agente Testes (Mastra)
+
+**Produto:** Flow IA Agents — Agente Testes
+**Versão alvo:** v0.1 (MVP)
+**Depende de:** `testa-ai` v1.1 (ver PRD separado)
+**Autor:** Tech Lead
+**Status:** Draft pra validação
+
+---
+
+## 1. Contexto
+
+A empresa precisa validar agentes de IA conversacionais antes de colocar em produção. Hoje o processo é:
+
+1. Dev abre o frontend React do `testa-ai`
+2. Cola prompt, número WhatsApp, credenciais
+3. Clica "Iniciar teste"
+4. Espera terminar
+5. Lê o relatório
+6. Decide se aprova
+
+**Problemas desse fluxo:**
+
+| # | Problema | Impacto |
+|---|---|---|
+| P1 | Um teste por vez, manual, depende do dev abrir o frontend | Não escala |
+| P2 | Cada teste usa uma persona genérica gerada só do prompt | Não testa cenários específicos (jailbreak, objeção, edge cases) |
+| P3 | Relatório mora no SSE da sessão; fechou o browser, perdeu | Sem histórico, sem auditoria |
+| P4 | Aprovação acontece na cabeça do dev, sem registro formal | Compliance sofre, especialmente em Health Tech (LGPD) |
+| P5 | Sem orquestração de baterias com múltiplos cenários paralelos | Cada conversa é testada isoladamente |
+
+**O que vai mudar com este agente:**
+
+O Agente Testes é um agente Mastra que vive no ClickUp como usuário dedicado. Ele é disparado quando uma task na lista `Testes e QA` tem seu status mudado pra "Em Preparação". A partir daí, ele lê a configuração da task, cria subtasks (uma por cenário de teste), dispara o testa-ai em paralelo pra cada subtask, espelha o progresso em tempo real nos comentários do ClickUp, e consolida tudo num relatório final que fica anexado à task-mãe. Lucas (ou outro humano autorizado) revisa e aprova ou reprova.
+
+---
+
+## 2. Objetivo
+
+Permitir que qualquer membro do time dispare baterias de teste de agentes IA **de dentro do ClickUp**, com múltiplos cenários rodando em paralelo, rastreabilidade completa e aprovação humana formal — sem nunca precisar abrir o frontend do testa-ai.
+
+---
+
+## 3. Usuários e papéis
+
+| Persona | Como interage |
+|---|---|
+| **PM/Dev (ex: Lucas)** | Cria a task de bateria na lista Testes e QA, preenche fields, muda status pra "Em Preparação" |
+| **Agente Testes** (usuário ClickUp dedicado) | Lê a task, cria subtasks, dispara testa-ai, comenta progresso, consolida relatório |
+| **Revisor (ex: Lucas)** | Recebe a task de volta em "Aguardando Revisão", lê relatório, aprova ou reprova |
+| **Auditor LGPD** | Consulta histórico de aprovações via filtros no ClickUp |
+
+---
+
+## 4. Arquitetura de alto nível
+
+```
+┌─────────────────────────────────────────────────────┐
+│  ClickUp: lista "Testes e QA"                       │
+│                                                     │
+│  Task-mãe: "Testar Sofia v1.3"                      │
+│   Status: Em Preparação ──────────┐                 │
+│   Campos:                          │                 │
+│   - Agente sob teste               │                 │
+│   - Cenários de teste (JSON)       │                 │
+│   - Instâncias Evolution           │                 │
+│   - Mensagens por conversa         │                 │
+└───────────────────────────────────┬┴─────────────────┘
+                                    │ webhook
+                                    │ taskStatusUpdated
+                                    ▼
+┌─────────────────────────────────────────────────────┐
+│  Mastra App (localhost:3002 + ngrok)                │
+│                                                     │
+│  /webhook/testes-status-change                      │
+│       │                                             │
+│       ▼                                             │
+│  Agente Testes (GPT-4.1)                            │
+│       │                                             │
+│       ├─► Tool: ClickUp MCP (CRUD tasks/subtasks)   │
+│       └─► Tool: testa-ai client (HTTP + SSE)        │
+└───────────────────────┬─────────────────────────────┘
+                        │
+                        ▼
+              ┌──────────────────┐
+              │  testa-ai v1.1   │
+              │  (VM)            │
+              └──────────────────┘
+```
+
+---
+
+## 5. Requisitos funcionais
+
+### RF1 — Escutar mudanças de status na lista Testes e QA
+
+**Descrição:**
+O Mastra expõe um endpoint HTTP `POST /webhook/testes-status-change` que recebe eventos do ClickUp. Quando o evento é `taskStatusUpdated` e o novo status é exatamente **"Em Preparação"**, e a task pertence à lista `Testes e QA` (ID `901113588686`), o Agente Testes é disparado.
+
+**Critérios de aceite:**
+- [ ] Webhook responde 200 imediatamente (não bloqueia o ClickUp)
+- [ ] Eventos de outros status são ignorados silenciosamente
+- [ ] Eventos de outras listas são ignorados silenciosamente
+- [ ] Eventos duplicados (mesma task, mesmo status, dentro de 10s) são ignorados
+- [ ] Falha no agente não retorna erro pro ClickUp (sempre 200)
+
+---
+
+### RF2 — Ler configuração da task-mãe
+
+**Descrição:**
+Ao ser disparado, o agente lê a task-mãe via ClickUp MCP e extrai os seguintes campos:
+
+| Campo | Tipo | Obrigatório | Descrição |
+|---|---|---|---|
+| Agente sob teste | relationship (Agentes) | sim | Aponta pra uma task da lista Agentes |
+| Prompt do agente | long text | sim | O system prompt a ser testado |
+| Cenários de teste | long text (JSON) | sim | Array de cenários (ver formato abaixo) |
+| Instâncias Evolution | long text (JSON) | sim | Array de instâncias disponíveis pra distribuir carga |
+| Mensagens por conversa | number | sim | 1–50 |
+| Orçamento máx (USD) | number | não | Se presente, aborta quando estourar |
+
+**Formato do campo "Cenários de teste":**
+```json
+[
+  {
+    "nome": "Lead frio com objeção de preço",
+    "descricao": "Cliente que já recebeu 3 contatos, orçamento apertado, abre com objeção",
+    "mensagens": 15
+  },
+  {
+    "nome": "Tentativa de jailbreak",
+    "descricao": "Usuário tenta fazer o agente ignorar suas instruções",
+    "mensagens": 10
+  }
+]
+```
+
+**Formato do campo "Instâncias Evolution":**
+```json
+[
+  { "nome": "instancia-01", "numero": "5511999999999", "url": "...", "key": "..." },
+  { "nome": "instancia-02", "numero": "5511888888888", "url": "...", "key": "..." }
+]
+```
+
+⚠️ **Decisão crítica:** credenciais da Evolution ficam no ClickUp neste MVP? Ou vão pro `.env` do Mastra e a task só aponta pelo nome? **Minha recomendação: `.env` do Mastra**. ClickUp não é cofre. Ver decisão D2 na seção 10.
+
+**Critérios de aceite:**
+- [ ] Se qualquer campo obrigatório está vazio, o agente comenta na task "Configuração incompleta: [campo X faltando]" e move status pra "Backlog de Testes"
+- [ ] JSON mal formado nos campos de cenários/instâncias gera erro explícito no comentário
+- [ ] Se a task referenciada em "Agente sob teste" não existe, erro explícito
+
+---
+
+### RF3 — Criar subtasks, uma por cenário
+
+**Descrição:**
+Pra cada item do array de cenários, o agente cria uma subtask na própria lista Testes e QA com:
+
+- Nome: `"[Cenário N/Total] {nome do cenário}"` (ex: `"[Cenário 1/3] Lead frio com objeção de preço"`)
+- Parent: task-mãe
+- Status inicial: `Em Preparação`
+- Descrição: copia o `descricao` do cenário
+- Campo "Instância atribuída": nome da instância Evolution alocada (round-robin)
+- Campo "Sessão testa-ai": vazio (preenche depois)
+- Campo "externalRef": `"clickup-{subtaskId}"` (usado pra correlacionar com o testa-ai — depende de RF2 do PRD do testa-ai)
+
+**Round-robin de instâncias:**
+Se há 3 instâncias e 10 cenários, distribui: `[inst01, inst02, inst03, inst01, inst02, inst03, inst01, inst02, inst03, inst01]`.
+
+**Critérios de aceite:**
+- [ ] Subtasks são criadas em ordem com numeração correta
+- [ ] Cada subtask tem instância atribuída
+- [ ] Task-mãe recebe um comentário resumo: "Criadas N subtasks, distribuídas em M instâncias"
+- [ ] Task-mãe muda pra status "Em Execução" após criar todas as subtasks
+
+---
+
+### RF4 — Disparar testa-ai em paralelo, uma chamada por subtask
+
+**Descrição:**
+Após criar as subtasks, o agente dispara todas simultaneamente fazendo `POST /api/test/start` pro testa-ai (uma chamada por subtask). Cada chamada envia:
+
+```json
+{
+  "agentWhatsappNumber": "<numero da instancia atribuida>",
+  "agentPrompt": "<prompt da task-mae>",
+  "messageCount": <mensagens do cenario ou default da task>,
+  "customScenario": "<descricao do cenario>",
+  "externalRef": "clickup-<subtaskId>",
+  "evolutionApiUrl": "<do .env>",
+  "evolutionInstanceName": "<nome da instancia>",
+  "evolutionApiKey": "<do .env>",
+  "openaiApiKey": "<do .env>"
+}
+```
+
+**Paralelismo real:**
+Todas as chamadas são disparadas com `Promise.all`. Não esperam uma terminar pra começar a próxima.
+
+**Tratamento de erro por subtask:**
+- Se o testa-ai retorna 400/500 na criação: subtask vai pra status "Erro", comentário com a mensagem
+- Se a chamada dá timeout (>10s): mesma coisa
+- **Uma subtask falhar não afeta as outras**
+
+**Critérios de aceite:**
+- [ ] Todas as chamadas partem em paralelo (verificável por timestamp nos logs)
+- [ ] `sessionId` retornado é gravado no campo "Sessão testa-ai" da subtask
+- [ ] Falha em uma subtask não aborta o batch inteiro
+- [ ] Task-mãe recebe comentário consolidado: "Dispararam X/Y subtasks com sucesso, Z com erro"
+
+---
+
+### RF5 — Consumir SSE e espelhar progresso no ClickUp
+
+**Descrição:**
+Pra cada subtask disparada com sucesso, o agente abre uma conexão SSE em `GET /api/test/:id/status` do testa-ai. Conforme eventos chegam, ele atualiza a subtask no ClickUp:
+
+| Evento SSE | Ação no ClickUp |
+|---|---|
+| `snapshot` | Comentário inicial: "Conectado. Status: {status}" |
+| `status` (running) | Muda status da subtask pra "Em Execução" |
+| `persona` | Comentário: "Persona gerada: {customerName} - {businessType}" |
+| `message` | Comentário: "Msg {N}/{total} - {role}: {preview primeiros 80 chars}" |
+| `report` | Salva JSON do report no custom field "Relatório (JSON)" + resumo como comentário |
+| `error` | Muda status pra "Erro" + comentário com a mensagem |
+| `status` (completed) | Muda status pra "Aprovado" ou "Reprovado — Em Ajuste" baseado no veredicto do report |
+
+**Anti-spam de comentários:**
+Eventos `message` são agrupados em lotes de 3 (3 mensagens = 1 comentário consolidado) pra não poluir o histórico.
+
+**Decisão automática de aprovação da subtask:**
+- `report.verdict === "APROVADO"` → subtask vai pra "Aprovado"
+- `report.verdict === "REPROVADO"` → subtask vai pra "Reprovado — Em Ajuste"
+- `report.verdict === "NECESSITA AJUSTES"` → subtask vai pra "Aguardando Revisão" (humano decide)
+- Sem veredicto → subtask vai pra "Aguardando Revisão"
+
+**Timeout de SSE:**
+Se a conexão SSE ficar sem eventos por mais de 5 minutos, o agente marca a subtask como "Erro — timeout" e fecha a conexão.
+
+**Critérios de aceite:**
+- [ ] Conexão SSE reconecta automaticamente se cair (com backoff)
+- [ ] Comentários aparecem no ClickUp em tempo quase-real (< 5s de latência)
+- [ ] Lotes de mensagens evitam spam
+- [ ] Timeout de 5min funciona e marca erro
+
+---
+
+### RF6 — Consolidar relatório final quando todas as subtasks terminam
+
+**Descrição:**
+Quando todas as subtasks de uma task-mãe estão em estado terminal (`Aprovado | Reprovado — Em Ajuste | Aguardando Revisão | Erro`), o agente gera um relatório consolidado em markdown e:
+
+1. Anexa como comentário grande na task-mãe
+2. Salva o JSON agregado no campo "Relatório consolidado (JSON)" da task-mãe
+3. Muda status da task-mãe pra **"Aguardando Revisão Lucas"**
+4. Menciona `@lucas` (ou usuário configurado como revisor) no comentário final
+
+**Conteúdo do relatório consolidado:**
+
+```markdown
+# Relatório Consolidado — {nome da task-mãe}
+
+## Sumário
+- Total de cenários: N
+- Aprovados: X
+- Reprovados: Y
+- Necessita ajustes: Z
+- Erros: W
+- Nota média: 7.8/10
+- Veredicto geral: {APROVADO | REPROVADO | REVISAR}
+
+## Por cenário
+
+### [Cenário 1/N] Lead frio com objeção de preço
+- Nota: 8.5/10
+- Veredicto: APROVADO
+- Alucinações: 0
+- Principais problemas: nenhum
+- [Link pra subtask]
+
+### [Cenário 2/N] ...
+
+## Problemas recorrentes (agregado)
+- Alucinação sobre política de desconto apareceu em 3/5 cenários
+- Perda de contexto após mensagem 12 apareceu em 2/5
+
+## Recomendações
+- ...
+```
+
+**Veredicto geral:**
+- Se **todas** as subtasks foram APROVADO → geral APROVADO
+- Se **alguma** foi REPROVADO → geral REPROVADO
+- Caso contrário → REVISAR
+
+**Critérios de aceite:**
+- [ ] Relatório só é gerado depois que TODAS as subtasks terminam
+- [ ] Estatísticas batem com as subtasks individuais
+- [ ] Revisor é mencionado com `@`
+- [ ] Task-mãe fica em "Aguardando Revisão Lucas"
+
+---
+
+### RF7 — Respeitar orçamento máximo de tokens
+
+**Descrição:**
+Se o campo "Orçamento máx (USD)" está preenchido na task-mãe, o agente monitora o consumo estimado conforme as subtasks vão completando. Se o total estimado ultrapassar o limite, ele:
+
+1. Aborta as subtasks que ainda não completaram (chamando `POST /api/test/:id/stop`)
+2. Comenta na task-mãe: "ORÇAMENTO EXCEDIDO — bateria abortada em {X}% de conclusão"
+3. Muda task-mãe pra status "Reprovado — Em Ajuste"
+4. Consolida o que tem até o momento
+
+**Como estimar custo:**
+Soma dos `responseTimeAnalysis` multiplicado por estimativa de tokens (hardcoded por modelo) — não é exato, é conservador (sempre superestima).
+
+⚠️ **Limitação honesta:** essa estimativa é aproximada. Pra custo exato teria que ler os campos `usage` da resposta do OpenAI, que o testa-ai atual não expõe. Se você quiser exatidão, o testa-ai precisa passar a retornar `usage` no report (seria uma RF adicional no PRD do testa-ai).
+
+**Critérios de aceite:**
+- [ ] Sem campo de orçamento, comportamento normal (nunca aborta por custo)
+- [ ] Com campo, aborta quando estima ultrapassar
+- [ ] Subtasks abortadas ficam em status claro, não em limbo
+
+---
+
+### RF8 — Operar sob usuário dedicado com auditoria limpa
+
+**Descrição:**
+Todas as ações do agente (comentários, mudanças de status, criação de subtasks) aparecem no histórico do ClickUp sob um usuário dedicado (ex: `agentes@empresa.com.br`), nunca sob um usuário humano.
+
+**Implementação:**
+O token do ClickUp configurado no `.env` do Mastra pertence a esse usuário dedicado.
+
+**Critérios de aceite:**
+- [ ] Nenhuma ação do agente aparece sob nome de humano
+- [ ] Filtro no ClickUp "Comentários por agentes@empresa.com.br" retorna todas as ações automatizadas
+- [ ] Se o token do humano é usado por engano (dev testando), fica claro no log e eventualmente no comportamento
+
+---
+
+## 6. Requisitos não-funcionais
+
+| # | Requisito | Métrica |
+|---|---|---|
+| RNF1 | Suportar 20 subtasks paralelas em uma bateria | Sem degradação perceptível |
+| RNF2 | Latência entre evento SSE e comentário no ClickUp | < 5s |
+| RNF3 | Resiliência a queda do testa-ai | Subtasks afetadas viram "Erro", bateria continua |
+| RNF4 | Resiliência a queda do Mastra | Na volta, opcional reconectar às sessões via `GET /api/test/list` (depende de RF4 do PRD do testa-ai) |
+| RNF5 | Credenciais nunca no ClickUp nem em log | `.env` com `.gitignore`; logs sanitizados |
+| RNF6 | 100% TypeScript, sem `any` | Lint rule ativa |
+
+---
+
+## 7. Integrações
+
+| Sistema | Papel | Como conecta |
+|---|---|---|
+| ClickUp MCP | CRUD de tasks, comentários, status | `https://mcp.clickup.com/mcp` via tool Mastra |
+| ClickUp Webhook API | Receber eventos | Script `scripts/setup-webhook.ts` cria via `POST /api/v2/team/{id}/webhook` |
+| testa-ai v1.1 | Executar testes | HTTP + SSE (ver PRD testa-ai) |
+| OpenAI | LLM do próprio agente Mastra (GPT-4.1) | API key no `.env` |
+| ngrok | Expor localhost pro ClickUp | Já disponível na stack do testa-ai |
+
+---
+
+## 8. Fora do escopo (v0.1)
+
+- ❌ Agente Triagem (PRD separado quando você pedir)
+- ❌ Dashboard visual fora do ClickUp
+- ❌ Re-teste automático de cenários reprovados
+- ❌ Integração com Slack/email
+- ❌ Histórico de baterias fora do ClickUp (tudo fica no ClickUp mesmo)
+- ❌ Suporte multi-tenant (um Mastra serve uma empresa)
+- ❌ Deploy em produção (MVP roda local + testa-ai em VM)
+
+---
+
+## 9. Riscos
+
+| # | Risco | Probabilidade | Impacto | Mitigação |
+|---|---|---|---|---|
+| RK1 | Webhook do ClickUp não entrega eventos (rede) | Média | Médio | Script manual `scripts/trigger-subtask.ts` pra disparar na mão |
+| RK2 | Duas subtasks na mesma instância Evolution confundem histórico WhatsApp | Alta | Médio | Round-robin garante distribuição; se há menos instâncias que cenários, serializa dentro da mesma instância |
+| RK3 | Agente Mastra cai no meio da bateria, subtasks ficam em "Em Execução" pra sempre | Média | Alto | Job de cleanup lê subtasks órfãs e marca como "Erro — agente caiu"; depende de RF4 do testa-ai pra recuperar estado |
+| RK4 | Custom fields do ClickUp não existem ou têm nomes diferentes | Média | Alto | Script `scripts/validate-clickup-schema.ts` roda no startup e aborta se schema não bate |
+| RK5 | Comentários poluem histórico do ClickUp | Alta | Baixo | Anti-spam via lotes de 3 |
+| RK6 | Conexões SSE concorrentes estouram memória | Baixa | Alto | Limite hardcoded de 20 sessões simultâneas por bateria |
+
+---
+
+## 10. Decisões que preciso validar
+
+| # | Decisão | Minha recomendação |
+|---|---|---|
+| D1 | LLM do agente orquestrador = GPT-4.1 | Mesmo do testa-ai, reaproveita stack |
+| D2 | Credenciais Evolution ficam no `.env` do Mastra, task só tem nome da instância | SIM — ClickUp não é cofre |
+| D3 | Round-robin simples ou balanceamento por carga? | Round-robin no MVP |
+| D4 | Revisor default (pra quem menciona) = Lucas (hardcoded) ou configurável por task? | Hardcoded no `.env` no MVP |
+| D5 | Subtasks com veredicto "NECESSITA AJUSTES" vão pra "Aguardando Revisão" ou "Aprovado"? | "Aguardando Revisão" (humano decide) |
+| D6 | Anti-spam de comentários: 3 msgs por comentário está bom? | Sim, ajustável via env var |
+| D7 | Timeout de SSE = 5min | Sim |
+| D8 | Orçamento por bateria: MVP ou fase 2? | **Cortar do MVP** — RF7 vira fase 2. Simplifica. |
+| D9 | Script de validação de schema do ClickUp no startup | Sim, evita 90% dos bugs de config |
+| D10 | Este PRD ou o próximo cobre o Agente Triagem? | Próximo, separado |
+
+---
+
+## 11. Dependências
+
+- **Bloqueia este PRD:** PRD do testa-ai v1.1 precisa estar aprovado e pelo menos RF1, RF2 e RF3 implementados (customScenario, externalRef, sessionsByNumber corrigido)
+- **É bloqueado por:** nada além do acima
+- **Relacionado:** PRD do Agente Triagem (ainda não escrito)
+
+---
+
+## 12. Plano de rollout
+
+| Fase | Entrega | Estimativa |
+|---|---|---|
+| F1 | Scaffold do projeto Mastra + MCP ClickUp + testa-ai client | 1 dia |
+| F2 | Webhook handler + leitura de task-mãe (RF1, RF2) | meio dia |
+| F3 | Criação de subtasks + disparo paralelo (RF3, RF4) | 1 dia |
+| F4 | Consumo de SSE + espelho de eventos (RF5) | 1 dia |
+| F5 | Consolidação de relatório (RF6) | meio dia |
+| F6 | Auditoria + script de validação de schema (RF8, D9) | meio dia |
+| F7 | Testes end-to-end com testa-ai real | 1 dia |
+
+**Total estimado:** ~5 dias úteis de dev focado, assumindo testa-ai v1.1 já pronto.
+
+---
+
+## 13. Checklist de aceite final
+
+- [ ] Todas as RFs têm critérios checados
+- [ ] Script de validação de schema passa contra o workspace real
+- [ ] Bateria de 5 cenários paralelos roda do início ao fim sem intervenção manual
+- [ ] Relatório consolidado é gerado e fica anexado na task-mãe
+- [ ] Filtro "Comentários do usuário agentes@" retorna todas as ações do agente
+- [ ] README documenta variáveis de ambiente e como rodar localmente
+- [ ] `.env.example` completo, `.env` no `.gitignore`
+
+---
+
+## Próximos passos
+
+1. Você revisa este PRD
+2. Responde as 10 decisões da seção 10
+3. Aponta RFs faltando ou errados
+4. Confirma se quer o PRD do Agente Triagem em seguida (ou só depois deste rodar)
+5. Quando aprovado, eu sigo pra arquitetura técnica ou direto pro código — você escolhe

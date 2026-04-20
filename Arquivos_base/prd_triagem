@@ -1,0 +1,446 @@
+# PRD — Agente Triagem (Mastra)
+
+**Produto:** Flow IA Agents — Agente Triagem
+**Versão alvo:** v0.1 (MVP)
+**Autor:** Tech Lead
+**Status:** Draft pra validação
+**Relacionado:** PRD do Agente Testes (mesma stack Mastra, mesmo projeto)
+
+---
+
+## 1. Contexto
+
+A área de Tecnologia recebe bugs por 4 canais (Suporte, QA manual via Léo, Clarity, Sentry). Hoje, quando um bug chega na lista `Bugs e Incidentes` do ClickUp, ele fica em estado bruto: descrição solta, sem severidade, sem módulo identificado, sem flag LGPD, sem ninguém atribuído. Alguém humano (geralmente o Tech Lead ou o QA) precisa ler, classificar e estruturar.
+
+**Problemas do processo manual:**
+
+| # | Problema | Impacto |
+|---|---|---|
+| P1 | Classificação manual leva em média 15–30min por bug | Gargalo no Tech Lead |
+| P2 | Critérios de severidade variam entre pessoas | P1 de um vira P2 do outro, inconsistência |
+| P3 | Bugs envolvendo dados de paciente às vezes passam sem flag LGPD | **Risco crítico de compliance Health Tech** |
+| P4 | Módulo afetado é adivinhado por quem lê | Dev errado é notificado, perde tempo |
+| P5 | Não há registro do raciocínio da classificação | Quando alguém questiona "por que isso é P1?", não tem resposta |
+
+**O que vai mudar com este agente:**
+
+Quando alguém comentar `@triagem` em uma task da lista `Bugs e Incidentes`, o Agente Triagem lê a descrição e os comentários existentes, classifica severidade, identifica módulo, detecta menção a dados de paciente, preenche todos os custom fields e comenta o raciocínio. O humano só valida.
+
+---
+
+## 2. Objetivo
+
+Reduzir o tempo de triagem de bugs de 15–30min pra menos de 60 segundos, mantendo qualidade comparável à classificação humana e garantindo **100%** de detecção de bugs com dados de paciente pra flag LGPD.
+
+---
+
+## 3. Usuários e papéis
+
+| Persona | Como interage |
+|---|---|
+| **QA (ex: Léo)** | Cria a task de bug, escreve descrição, comenta `@triagem` pra disparar |
+| **Dev (ex: Igor, Porto)** | Recebe bug já estruturado; valida diagnóstico antes de corrigir |
+| **Agente Triagem** (usuário ClickUp dedicado) | Lê task, classifica, preenche fields, comenta raciocínio, muda status |
+| **Tech Lead / revisor** | Spot-check semanal das classificações pra garantir qualidade |
+| **Auditor LGPD** | Consulta bugs com flag LGPD pra auditoria |
+
+---
+
+## 4. Arquitetura de alto nível
+
+```
+┌──────────────────────────────────────────────────┐
+│  ClickUp: lista "Bugs e Incidentes"              │
+│                                                  │
+│  Task: "Erro ao salvar prontuário"               │
+│   Status: Inbox                                  │
+│                                                  │
+│  Comentário: "@triagem por favor"                │
+└─────────────────────┬────────────────────────────┘
+                      │ webhook
+                      │ taskCommentPosted
+                      ▼
+┌──────────────────────────────────────────────────┐
+│  Mastra App (localhost:3002 + ngrok)             │
+│                                                  │
+│  /webhook/triagem                                │
+│       │                                          │
+│       ▼                                          │
+│  Agente Triagem (GPT-4.1)                        │
+│       │                                          │
+│       └─► Tool: ClickUp MCP (ler/escrever task)  │
+└──────────────────────────────────────────────────┘
+```
+
+O Agente Triagem compartilha o mesmo projeto Mastra, o mesmo servidor HTTP e o mesmo cliente MCP do ClickUp do Agente Testes. A diferença é o webhook handler e o system prompt.
+
+---
+
+## 5. Requisitos funcionais
+
+### RF1 — Escutar menções a `@triagem` em comentários
+
+**Descrição:**
+O Mastra expõe um endpoint `POST /webhook/triagem` que recebe eventos do ClickUp. O agente é disparado quando:
+
+- Evento = `taskCommentPosted`
+- Task pertence à lista `Bugs e Incidentes` (ID `901113587342`)
+- Comentário contém a string literal `@triagem` (case-insensitive)
+- Autor do comentário **não é** o próprio usuário do agente (evita loop)
+
+**Critérios de aceite:**
+- [ ] Webhook responde 200 imediatamente
+- [ ] Comentários sem `@triagem` são ignorados
+- [ ] Comentários do próprio agente são ignorados
+- [ ] Comentários em outras listas são ignorados
+- [ ] Re-triagem: se alguém comenta `@triagem` numa task que já foi triageada antes, agente re-classifica mas mantém comentários antigos intactos
+
+---
+
+### RF2 — Ler contexto completo da task
+
+**Descrição:**
+Ao ser disparado, o agente lê via ClickUp MCP:
+
+1. Título da task
+2. Descrição completa
+3. Todos os comentários anteriores (pra contexto)
+4. Valores atuais dos custom fields (pode re-triagear se já tem valores)
+5. Status atual
+
+**Critérios de aceite:**
+- [ ] Task sem descrição ainda é processada (usa só título + comentários)
+- [ ] Comentários do próprio agente são lidos mas o agente sabe que vieram dele (não duplicam raciocínio)
+- [ ] Se a task foi deletada entre o webhook e a leitura, agente para silenciosamente
+
+---
+
+### RF3 — Classificar severidade (P0/P1/P2/P3)
+
+**Descrição:**
+O agente classifica a severidade usando os seguintes critérios (injetados no system prompt):
+
+| Severidade | Critérios (qualquer um basta) |
+|---|---|
+| **P0** | Sistema fora do ar OR envolve dados de paciente OR perda irreversível de dados OR falha de segurança/auth OR bloqueia fluxo crítico pra todos usuários |
+| **P1** | Feature crítica não funciona (login, checkout, fluxo principal) OR impacta >50% dos usuários OR workaround é complicado |
+| **P2** | Feature secundária com problema OR tem workaround viável OR impacta minoria de usuários |
+| **P3** | Cosmético OR baixo impacto OR melhoria menor |
+
+**Regra dura:** qualquer menção a prontuário, paciente, CPF, exame, laudo, prescrição, diagnóstico, dados de saúde → **força P0** independente de outros critérios.
+
+**Critérios de aceite:**
+- [ ] Cada classificação vem acompanhada de justificativa no comentário
+- [ ] P0 forçado por dados de paciente é explicitamente marcado: "P0 forçado por menção a [termo]"
+- [ ] Se o agente tem baixa confiança (descrição muito vaga, ambígua), ele classifica como **P2** e marca `confiança_baixa: true` no comentário
+
+---
+
+### RF4 — Identificar módulo afetado
+
+**Descrição:**
+O agente identifica qual módulo da aplicação é afetado:
+
+| Módulo | Critérios |
+|---|---|
+| **Backend** | APIs, endpoints, lógica server-side, banco, lentidão de queries |
+| **Frontend** | UI, telas, comportamento client-side, rendering, CSS |
+| **Infra** | Deploy, servidores, performance global, downtime, certificados, DNS |
+| **Auth** | Login, permissões, sessão, OAuth, 2FA |
+| **Dados** | ETL, relatórios, dashboards, integrações de dados, sync |
+
+**Critérios de aceite:**
+- [ ] Cada task recebe exatamente UM módulo primário
+- [ ] Se tem características de múltiplos módulos, o agente escolhe o predominante e menciona os outros no comentário
+- [ ] Se não consegue identificar, deixa vazio e marca `modulo_indefinido: true`
+
+---
+
+### RF5 — Detectar dados de paciente e flaggear LGPD
+
+**Descrição:**
+Esta é a funcionalidade mais crítica do agente. Se a descrição, título ou comentários contêm **qualquer** menção a dados de paciente, o agente:
+
+1. Marca o checkbox "Dados de paciente?" como `true`
+2. Força severidade P0 (RF3)
+3. Adiciona comentário com destaque: `⚠️ LGPD — bug envolve dados de paciente. Severidade forçada para P0.`
+4. Lista os termos encontrados no comentário (pra auditoria)
+
+**Lista mínima de termos que disparam a flag:**
+
+```
+paciente, prontuário, prontuario, CPF, exame, laudo, prescrição,
+prescricao, diagnóstico, diagnostico, histórico médico, historico medico,
+receita, anamnese, consulta, atendimento, leito, internação, internacao,
+dados sensíveis, dados sensiveis, LGPD, HIPAA, saúde, saude
+```
+
+**Regra de caudela:** em caso de dúvida, **sempre marcar a flag**. Falso positivo é melhor que falso negativo em compliance.
+
+**Critérios de aceite:**
+- [ ] Todos os termos da lista disparam a flag (teste com 20+ casos)
+- [ ] Termos em variações (acento/sem acento, maiúscula/minúscula, plural/singular) são detectados
+- [ ] Falso negativo é considerado bug crítico do agente
+- [ ] Comentário de LGPD tem formato fixo pra ser facilmente filtrável
+
+---
+
+### RF6 — Identificar canal de origem (quando detectável)
+
+**Descrição:**
+Se a descrição/título/comentários indicam claramente de onde veio o bug, o agente preenche o campo "Canal de origem":
+
+- `Suporte` — menção a "cliente reportou", "ticket", "atendimento"
+- `QA` — menção a "durante teste", "homologação", "QA detectou"
+- `Clarity` — menção a "Clarity", "gravação de sessão"
+- `Sentry` — menção a "Sentry", "exception", "stack trace"
+
+**Se não detectável, deixa vazio** (não chuta).
+
+**Critérios de aceite:**
+- [ ] Campo fica vazio quando não há evidência clara
+- [ ] Cada detecção é justificada no comentário
+
+---
+
+### RF7 — Preencher custom fields da task
+
+**Descrição:**
+Após a análise, o agente usa o ClickUp MCP pra preencher:
+
+| Campo | Valor |
+|---|---|
+| Severidade | P0 / P1 / P2 / P3 |
+| Módulo | Backend / Frontend / Infra / Auth / Dados (ou vazio) |
+| Canal de origem | Suporte / QA / Clarity / Sentry (ou vazio) |
+| Dados de paciente? | checkbox true/false |
+| Dev responsável | (ver RF8) |
+
+**Critérios de aceite:**
+- [ ] Campos existentes são sobrescritos (re-triagem)
+- [ ] Se um campo não pode ser preenchido (ex: módulo não identificado), fica vazio mas agente comenta a razão
+- [ ] Erro de permissão ao escrever gera comentário de erro explícito
+
+---
+
+### RF8 — Sugerir dev responsável (sem atribuir)
+
+**Descrição:**
+Baseado no módulo identificado, o agente **sugere** um dev no comentário (não atribui diretamente, pra não pisar em trabalho humano):
+
+| Módulo | Sugestão padrão |
+|---|---|
+| Backend / Infra / Auth / Dados | `@igor` (configurável via env) |
+| Frontend | `@porto` (configurável via env) |
+
+**Regra adicional:** se "Dados de paciente?" = true, SEMPRE adiciona `@igor` como watcher no comentário (mesmo que o módulo seja Frontend), porque Igor é o responsável por LGPD/backend.
+
+**Critérios de aceite:**
+- [ ] Sugestão aparece no comentário como texto, não como atribuição automática
+- [ ] Mapeamento módulo→dev é configurável via env vars
+- [ ] Igor é watcher automático quando há dados de paciente, independente de módulo
+
+---
+
+### RF9 — Comentar raciocínio estruturado
+
+**Descrição:**
+Após toda análise, o agente publica UM comentário consolidado no formato:
+
+```markdown
+**🤖 Triagem automática**
+
+**Severidade:** P0
+> P0 forçado por menção a "prontuário" e "paciente".
+
+**Módulo:** Backend
+> Descrição menciona falha ao salvar no banco via endpoint `/prontuarios`.
+
+**Canal:** Suporte
+> Descrição começa com "cliente reportou".
+
+**Dados de paciente:** ✅ SIM
+> ⚠️ LGPD — termos encontrados: "prontuário", "paciente".
+> Severidade forçada para P0. @igor adicionado como watcher.
+
+**Dev sugerido:** @igor (por módulo Backend + LGPD)
+
+**Confiança:** Alta
+
+---
+_Triagem feita pelo Agente Triagem. Se algo estiver errado, corrija manualmente e re-execute com `@triagem`._
+```
+
+**Critérios de aceite:**
+- [ ] Formato é fixo e consistente entre triagens
+- [ ] Cada decisão tem justificativa
+- [ ] Comentário é sempre em português
+- [ ] Footer explica como re-executar
+
+---
+
+### RF10 — Mudar status pra "Em Análise"
+
+**Descrição:**
+Após preencher tudo e comentar, o agente muda o status da task de `Inbox` pra `Em Análise`.
+
+**Exceções:**
+- Se o status atual **não é** `Inbox`, o agente não muda nada (respeita trabalho humano em andamento)
+- Exemplo: se o status já é `Em Correção` e alguém comenta `@triagem` pedindo re-análise, o agente re-classifica mas **não** volta o status pra "Em Análise"
+
+**Critérios de aceite:**
+- [ ] Status muda de Inbox → Em Análise
+- [ ] Status em outros estados não é alterado
+- [ ] Comentário registra: "Status alterado: Inbox → Em Análise" OU "Status mantido: {status atual}"
+
+---
+
+### RF11 — Regra de confiança baixa
+
+**Descrição:**
+Se a descrição é curta demais (< 30 caracteres) OU o agente detecta ambiguidade séria (múltiplas interpretações possíveis), ele:
+
+1. Classifica com os melhores chutes possíveis
+2. Marca `Confiança: Baixa` no comentário
+3. Adiciona aviso no topo: `⚠️ BAIXA CONFIANÇA — favor revisar manualmente. Descrição insuficiente pra triagem precisa.`
+4. **Não** muda o status (deixa em Inbox pro humano)
+
+**Critérios de aceite:**
+- [ ] Tasks com descrição vazia ou muito curta sempre disparam baixa confiança
+- [ ] Ambiguidade real (ex: "não funciona") dispara baixa confiança
+- [ ] Em baixa confiança, status permanece em Inbox
+
+---
+
+### RF12 — Operar sob usuário dedicado com auditoria limpa
+
+**Descrição:**
+Mesma regra do Agente Testes (RF8 daquele PRD). Todas as ações do Agente Triagem aparecem sob o usuário `agentes@empresa.com.br` (ou separado, ex: `triagem@empresa.com.br` se você quiser granularidade).
+
+⚠️ **Decisão D1 na seção 9:** um usuário pros dois agentes ou um por agente?
+
+**Critérios de aceite:**
+- [ ] Nenhuma ação aparece sob nome de humano
+- [ ] Filtro por usuário retorna todas as triagens
+
+---
+
+## 6. Requisitos não-funcionais
+
+| # | Requisito | Métrica |
+|---|---|---|
+| RNF1 | Latência end-to-end: menção `@triagem` → status "Em Análise" | < 60 segundos em 95% dos casos |
+| RNF2 | Precisão de detecção LGPD | 100% recall (zero falsos negativos) |
+| RNF3 | Precisão de severidade | > 80% de concordância com humano em spot-check semanal |
+| RNF4 | Custo por triagem | < $0.05 USD |
+| RNF5 | Resiliência | Falha no LLM → comentário de erro, task volta pra Inbox humano |
+| RNF6 | 100% TypeScript, sem `any` | Lint rule ativa |
+
+---
+
+## 7. Integrações
+
+| Sistema | Papel | Como conecta |
+|---|---|---|
+| ClickUp MCP | Ler/escrever tasks, comentários, status, fields | Mesma tool compartilhada com Agente Testes |
+| ClickUp Webhook API | Receber `taskCommentPosted` | Script `scripts/setup-webhook.ts` cria ambos webhooks (triagem + testes) |
+| OpenAI GPT-4.1 | LLM do agente | API key no `.env` (mesma do Agente Testes) |
+| ngrok | Expor localhost pro ClickUp | Mesma instância do Agente Testes (um túnel serve os dois webhooks) |
+
+---
+
+## 8. Fora do escopo (v0.1)
+
+- ❌ Corrigir bugs (só classifica, nunca executa)
+- ❌ Escalar automaticamente pra humano (só sugere no comentário)
+- ❌ Aprender com correções humanas (ML / fine-tuning)
+- ❌ Integração direta com Sentry/Clarity/Suporte (bugs entram no ClickUp por outro meio, agente só triageia)
+- ❌ Dashboard de métricas de triagem
+- ❌ Notificação por Slack/email quando bug P0 aparece (ClickUp cuida)
+- ❌ Criar tasks filho pra sub-problemas detectados
+
+---
+
+## 9. Decisões que preciso validar
+
+| # | Decisão | Minha recomendação |
+|---|---|---|
+| D1 | Usuário ClickUp dedicado: um compartilhado com Agente Testes (`agentes@`) ou separado (`triagem@`)? | **Um compartilhado** — simplifica config, ainda dá pra diferenciar pelo conteúdo do comentário |
+| D2 | Trigger é `@triagem` literal ou qualquer menção ao usuário bot no ClickUp (@agentes)? | **Literal `@triagem`** — mais explícito, evita trigger acidental |
+| D3 | Re-triagem apaga comentários antigos ou empilha? | **Empilha** — auditoria precisa de histórico |
+| D4 | Mapeamento módulo→dev (Igor/Porto) hardcoded no `.env` ou configurável por task? | **`.env` no MVP** |
+| D5 | Lista de termos LGPD hardcoded no system prompt ou em arquivo separado? | **Arquivo separado** (`config/lgpd-terms.ts`) pra facilitar atualização |
+| D6 | Confiança baixa = manter em Inbox ou mover pra status próprio "Triagem Incompleta"? | **Manter em Inbox** no MVP (menos status novo) |
+| D7 | Agente re-triageia automaticamente quando a descrição é editada? | **Não** — só dispara via `@triagem` explícito |
+| D8 | Limite de tamanho da task analisada (descrição + comentários)? | **10.000 chars**, corta o mais antigo se passar |
+
+---
+
+## 10. Riscos
+
+| # | Risco | Probabilidade | Impacto | Mitigação |
+|---|---|---|---|---|
+| RK1 | Falso negativo LGPD (bug com paciente passa sem flag) | Média | **Crítico** | Lista expansiva de termos; regra "em dúvida, marca"; auditoria semanal |
+| RK2 | Agente entra em loop comentando em cima dos próprios comentários | Baixa | Alto | Filtro de autor no webhook (ignora comentários do próprio usuário) |
+| RK3 | GPT-4.1 classifica errado P0 como P2 | Baixa | Alto | Critérios rígidos no system prompt; spot-check semanal |
+| RK4 | Webhook dispara múltiplas vezes pro mesmo `@triagem` (retry do ClickUp) | Média | Médio | Debounce: ignora eventos duplicados dentro de 10s |
+| RK5 | Descrição do bug contém código/stack trace gigante, estoura contexto | Baixa | Baixo | Truncamento pra 10.000 chars (D8) |
+| RK6 | Dev não confia no agente, ignora triagem, re-classifica tudo manual | Alta | Alto | Fase de rodagem com spot-check e ajuste de prompt nas primeiras 2 semanas |
+| RK7 | Menção `@triagem` em comentário citando outro bug triageado (ex: "esse é igual o que o @triagem classificou ontem") | Média | Médio | System prompt ensina o agente a detectar que é meta-discussão, não novo trigger. Fallback: humano ignora ou ajusta. |
+
+---
+
+## 11. Dependências
+
+- **Bloqueia este PRD:** nada. Triagem é **independente** do testa-ai (não consome o backend do testa-ai).
+- **Compartilha com:** PRD do Agente Testes (mesmo projeto Mastra, mesmo servidor, mesmo MCP ClickUp, mesmo ngrok)
+- **É bloqueado por:** nenhuma funcionalidade externa. Pode ser implementado em paralelo com o Agente Testes.
+
+---
+
+## 12. Plano de rollout
+
+| Fase | Entrega | Estimativa |
+|---|---|---|
+| F1 | Scaffold do webhook handler + integração com MCP (reaproveita do Agente Testes) | meio dia |
+| F2 | System prompt + regras de classificação (RF3–RF6) | 1 dia |
+| F3 | Comentário estruturado + mudança de status (RF9, RF10) | meio dia |
+| F4 | Lista LGPD + regras de confiança baixa (RF5, RF11) | meio dia |
+| F5 | Testes com 20 bugs reais extraídos do histórico | 1 dia |
+| F6 | Ajuste de prompt com base nos erros detectados | meio dia |
+
+**Total estimado:** ~4 dias úteis. **Pode rodar em paralelo com o Agente Testes** se você tiver o scaffold base pronto.
+
+---
+
+## 13. Métricas de sucesso pós-lançamento
+
+Depois de 2 semanas rodando:
+
+- [ ] Tempo médio de triagem: < 60s (medido)
+- [ ] Recall LGPD: 100% (zero falso negativo)
+- [ ] Concordância de severidade com humano: > 80%
+- [ ] Taxa de re-triagem manual: < 20%
+- [ ] Custo por triagem: < $0.05
+- [ ] Devs relatam que a sugestão é útil: pesquisa qualitativa no time
+
+---
+
+## 14. Checklist de aceite final
+
+- [ ] Todos os RFs têm critérios checados
+- [ ] Pelo menos 20 casos reais do histórico foram processados com resultado revisado
+- [ ] Zero falso negativo LGPD nos 20 casos
+- [ ] Webhook dispara e responde corretamente
+- [ ] Filtro de autor evita loops
+- [ ] README atualizado com seção de Triagem
+- [ ] `.env.example` inclui `TRIAGEM_BACKEND_DEV`, `TRIAGEM_FRONTEND_DEV`
+
+---
+
+## Próximos passos
+
+1. Você revisa os dois PRDs (Testes + Triagem)
+2. Responde as decisões abertas de ambos
+3. Confirma que pode rodar em paralelo (sugestão: sim)
+4. Aprovado, eu vou pra arquitetura técnica OU direto pro código (sua escolha)

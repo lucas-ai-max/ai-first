@@ -1,0 +1,340 @@
+TestadorAI API
+ 1.1.0 
+OAS 3.0
+API para teste automatizado de agentes conversacionais WhatsApp via Evolution API + GPT-4.1.
+
+Servers
+
+/ - Servidor local
+
+Authorize
+Testes
+
+
+POST
+/api/test/start
+Iniciar um teste
+
+
+Cria uma sessão de teste e inicia a simulação de conversa em background. Retorna 202 imediatamente.
+
+Parameters
+Try it out
+No parameters
+
+Request body
+
+application/json
+Example Value
+Schema
+{
+  "agentWhatsappNumber": "5511999999999",
+  "agentPrompt": "Você é uma SDR da empresa X...",
+  "messageCount": 15,
+  "customScenario": "Lead frio com objeção de preço",
+  "externalRef": "clickup-subtask-abc123",
+  "evolutionApiUrl": "https://evo.example.com",
+  "evolutionInstanceName": "tester-01",
+  "evolutionApiKey": "evo-key-xxx",
+  "openaiApiKey": "sk-xxx"
+}
+Responses
+Code	Description	Links
+202	
+Teste iniciado
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "sessionId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "externalRef": "string"
+}
+No links
+400	
+Campos obrigatórios ausentes ou validação falhou
+
+Media type
+
+application/json
+Example Value
+Schema
+{
+  "error": "string"
+}
+No links
+401	
+API Key inválida ou ausente
+
+No links
+
+GET
+/api/test/list
+Listar sessões
+
+
+Retorna todas as sessões em memória, com filtros opcionais.
+
+Parameters
+Try it out
+Name	Description
+status
+string
+(query)
+Filtrar por status
+
+Available values : pending, configuring_webhook, running, generating_report, completed, stopped, error
+
+
+--
+externalRef
+string
+(query)
+Filtrar por referência externa exata
+
+externalRef
+Responses
+Code	Description	Links
+200	
+Lista de sessões
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "sessions": [
+    {
+      "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+      "status": "pending",
+      "agentNumber": "string",
+      "externalRef": "string",
+      "messagesRemaining": 0,
+      "createdAt": 0
+    }
+  ],
+  "total": 0
+}
+No links
+401	
+API Key inválida ou ausente
+
+No links
+
+GET
+/api/test/{id}/status
+Stream SSE de status
+
+
+Abre uma conexão Server-Sent Events com eventos: snapshot, status, message, persona, report, error. Cada evento inclui externalRef quando presente.
+
+Parameters
+Try it out
+Name	Description
+id *
+string($uuid)
+(path)
+ID da sessão
+
+id
+token
+string
+(query)
+API Key alternativa (para EventSource que não suporta headers)
+
+token
+Responses
+Code	Description	Links
+200	
+Stream SSE aberto
+
+Media type
+
+text/event-stream
+Controls Accept header.
+No links
+401	
+API Key inválida ou ausente
+
+No links
+404	
+Sessão não encontrada
+
+No links
+
+POST
+/api/test/{id}/stop
+Parar um teste
+
+
+Para a execução de um teste em andamento. Se houver conversa suficiente (2+ mensagens do agente), gera relatório parcial.
+
+Parameters
+Try it out
+Name	Description
+id *
+string($uuid)
+(path)
+ID da sessão
+
+id
+Responses
+Code	Description	Links
+200	
+Teste parado
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "message": "string",
+  "status": "string",
+  "report": {}
+}
+No links
+400	
+Teste não está rodando
+
+No links
+401	
+API Key inválida ou ausente
+
+No links
+404	
+Sessão não encontrada
+
+No links
+
+GET
+/api/test/{id}/report
+Obter relatório
+
+
+Retorna o relatório completo do teste. Inclui externalRef no response.
+
+Parameters
+Try it out
+Name	Description
+id *
+string($uuid)
+(path)
+ID da sessão
+
+id
+Responses
+Code	Description	Links
+200	
+Relatório completo (JSON estruturado com scores, análises e recomendações)
+
+No links
+401	
+API Key inválida ou ausente
+
+No links
+404	
+Sessão ou relatório não encontrado
+
+No links
+Infraestrutura
+
+
+GET
+/api/tunnel
+Info do túnel/webhook
+
+
+Retorna a URL pública do webhook (ngrok ou manual).
+
+Parameters
+Try it out
+No parameters
+
+Responses
+Code	Description	Links
+200	
+Info do túnel
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "url": "string",
+  "webhookEndpoint": "string",
+  "status": "connected"
+}
+No links
+401	
+API Key inválida ou ausente
+
+No links
+
+GET
+/health
+Health check
+
+Verifica se o servidor está rodando. Não protegido por auth.
+
+Parameters
+Try it out
+No parameters
+
+Responses
+Code	Description	Links
+200	
+OK
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "status": "ok"
+}
+No links
+Webhook
+
+
+POST
+/api/webhook/evolution
+Webhook da Evolution API
+
+Recebe eventos MESSAGES_UPSERT da Evolution API. Não protegido por auth.
+
+Parameters
+Try it out
+No parameters
+
+Request body
+
+application/json
+Example Value
+Schema
+{}
+Responses
+Code	Description	Links
+200	
+Evento recebido
+
+No links
+
+Schemas
+StartTestRequest
+StartTestResponse
+SessionSummary
+ListSessionsResponse
+StopTestResponse
+TunnelInfo
+Error
