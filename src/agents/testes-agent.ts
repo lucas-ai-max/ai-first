@@ -616,10 +616,15 @@ async function dispatchTest(
   const env = getEnv();
   const caseData = extractCaseData(ctx.scenario.descricao);
 
+  const messageCount = ctx.scenario.mensagens ?? defaultMessageCount;
+  const messageCountSource = ctx.scenario.mensagens !== undefined
+    ? `scenario.mensagens (${ctx.scenario.mensagens})`
+    : `default (${defaultMessageCount})`;
+
   const payload: TestaAiStartPayload = {
     agentWhatsappNumber,
     agentPrompt,
-    messageCount: ctx.scenario.mensagens ?? defaultMessageCount,
+    messageCount,
     customScenario: ctx.scenario.descricao,
     externalRef: `clickup-${ctx.subtaskId}`,
     evolutionApiUrl: ctx.instance.url ?? env.EVOLUTION_API_URL,
@@ -628,6 +633,8 @@ async function dispatchTest(
     openaiApiKey: env.OPENAI_API_KEY,
     ...(Object.keys(caseData).length > 0 && { caseData }),
   };
+
+  console.log(`[testes] 📩 Enviando pro testa-ai: messageCount=${messageCount} (fonte: ${messageCountSource}), cenario="${ctx.scenario.nome}", subtask=${ctx.subtaskId}`);
 
   if (Object.keys(caseData).length > 0) {
     console.log(`[testes] ✅ Payload includes caseData: CPF=${caseData.cpf}, Nome=${caseData.nome}, Contrato=${caseData.contrato}`);
@@ -750,7 +757,9 @@ async function waitForTestCompletion(ctx: SubtaskContext, agentPrompt: string): 
 
   try {
     // Fazer polling até completar ou erro
+    const expectedMessages = ctx.scenario.mensagens;
     await pollTestStatus(ctx.sessionId!, externalRef, async (status) => {
+      console.log(`[testes] 📊 subtask=${ctx.subtaskId} status=${status.status} messagesRemaining=${status.messagesRemaining ?? "?"} expected=${expectedMessages ?? "?"}`);
       if (status.status === "running") {
         await testsUpdateTaskStatus(ctx.subtaskId, "em execução");
       }
