@@ -511,7 +511,7 @@ export async function runTestBattery(parentTaskId: string): Promise<void> {
         console.log(`[testes] Waiting for test completion for ${ctx.subtaskId}... (timeout: ${testTimeoutMs / 1000}s)`);
 
         // Usar Promise.race para implementar timeout geral
-        const pollPromise = waitForTestCompletion(ctx);
+        const pollPromise = waitForTestCompletion(ctx, prompt as string);
         const timeoutPromise = new Promise<SubtaskResult>((_, reject) =>
           setTimeout(() => reject(new Error(`Teste expirou após ${testTimeoutMs / 1000}s sem conclusão`)), testTimeoutMs)
         );
@@ -646,9 +646,105 @@ async function dispatchTest(
   return sessionId;
 }
 
+// ─── LLM Enrichment: Análise aprofundada do relatório ─────────
+
+const ENRICHMENT_PROMPT = `Você é um analista sênior de qualidade de agentes conversacionais de IA. Recebe o relatório bruto de um teste automatizado e deve produzir uma análise APROFUNDADA e ACIONÁVEL.
+
+Gere a análise em seções com títulos claros. Não repita o que já tá no resumo bruto — CONTEXTUALIZE, INTERPRETE e ACIONE.
+
+Estrutura obrigatória (em português, texto puro, sem markdown):
+
+EXPECTATIVAS DO CENÁRIO
+--------------------------------------------------
+Liste 3-5 comportamentos que o agente DEVERIA ter exibido nesse cenário, derivados do prompt dele e da descrição do caso. Seja específico — cite o que estava pedido.
+
+DESVIOS OBSERVADOS
+--------------------------------------------------
+Para cada desvio comportamental relevante, descreva: (1) o que deveria ter acontecido, (2) o que parece ter acontecido segundo o resumo, (3) o impacto no cliente/negócio. Máximo 5 desvios, ordenados por gravidade.
+
+INTERPRETAÇÃO DE DESEMPENHO
+--------------------------------------------------
+Analise os números de tempo (média, mediana, max, timeouts) CONTEXTUALIZADOS. Não só repita — explique o que esses números significam pra experiência do cliente. Use comparação com padrões de atendimento (ex: média humana é ~5-15s).
+
+CAUSAS PROVÁVEIS
+--------------------------------------------------
+Hipóteses do que no PROMPT ou na CONFIGURAÇÃO do agente causou as falhas. Seja concreto: "a instrução X pode estar conflitando com Y", "falta de mecanismo de fallback", "prompt muito longo", etc.
+
+AÇÕES RECOMENDADAS
+--------------------------------------------------
+Lista priorizada de 3-5 mudanças CONCRETAS no prompt/config do agente. Cada ação deve ser acionável (ex: "adicionar cláusula X no prompt", "reduzir temperatura", "separar o sistema em 2 agentes"). Nada genérico.
+
+NOTAS FINAIS
+--------------------------------------------------
+1-2 parágrafos com observações gerais, pontos de atenção pra revisão humana, ou riscos que não encaixam nas seções acima.
+
+REGRAS:
+- Seja direto, nada de floreio.
+- Cite detalhes específicos do caso (CPF, nome, valores) quando relevante.
+- Se não houver informação suficiente pra uma seção, escreva "Sem dados suficientes." e siga adiante.
+- Nunca invente fatos que não estão no relatório bruto.`;
+
+async function enrichReportWithLLM(
+  report: TestaAiReport,
+  scenario: TestScenario,
+  agentPrompt: string,
+  caseData: Record<string, unknown>,
+): Promise<string | null> {
+  try {
+    const agent = getTestesAgent();
+
+    const context = [
+      `## Prompt do agente testado (sistema):`,
+      agentPrompt.slice(0, 8000),
+      ``,
+      `## Cenário de teste:`,
+      `Nome: ${scenario.nome}`,
+      `Descrição: ${scenario.descricao}`,
+      ``,
+      Object.keys(caseData).length > 0
+        ? `## Dados do caso:\n${Object.entries(caseData).map(([k, v]) => `- ${k}: ${v}`).join("\n")}`
+        : `## Dados do caso: (nenhum)`,
+      ``,
+      `## Relatório bruto do testa-ai:`,
+      `Veredicto: ${report.verdict}`,
+      report.score !== undefined ? `Score: ${report.score}/10` : ``,
+      report.hallucinations !== undefined ? `Alucinações detectadas: ${report.hallucinations}` : ``,
+      report.summary ? `\nResumo:\n${report.summary}` : ``,
+      report.issues && report.issues.length > 0
+        ? `\nIssues reportadas:\n${report.issues.map((i, idx) => `${idx + 1}. ${i}`).join("\n")}`
+        : ``,
+      report.recommendations && report.recommendations.length > 0
+        ? `\nRecomendações iniciais:\n${report.recommendations.map((r, idx) => `${idx + 1}. ${r}`).join("\n")}`
+        : ``,
+      report.responseTimeAnalysis
+        ? `\nMétricas de desempenho:\n${Object.entries(report.responseTimeAnalysis).map(([k, v]) => `- ${k}: ${v}`).join("\n")}`
+        : ``,
+    ]
+      .filter((l) => l !== "")
+      .join("\n");
+
+    const userPrompt = `${ENRICHMENT_PROMPT}\n\n---\n\n${context}\n\n---\n\nGere a análise agora.`;
+    console.log(`[testes] 🧠 Enriquecendo relatório com LLM (${userPrompt.length} chars)...`);
+
+    const response = await agent.generate(userPrompt);
+    const text = typeof response.text === "string" ? response.text : String(response.text);
+
+    if (!text || text.trim().length === 0) {
+      console.warn(`[testes] ⚠️  LLM retornou texto vazio na análise aprofundada`);
+      return null;
+    }
+
+    console.log(`[testes] ✅ Análise aprofundada gerada (${text.length} chars)`);
+    return text.trim();
+  } catch (err) {
+    console.warn(`[testes] ⚠️  Falha ao enriquecer relatório:`, err instanceof Error ? err.message : String(err));
+    return null;
+  }
+}
+
 // ─── Polling: Aguarda conclusão do teste ──────────────────────
 
-async function waitForTestCompletion(ctx: SubtaskContext): Promise<SubtaskResult> {
+async function waitForTestCompletion(ctx: SubtaskContext, agentPrompt: string): Promise<SubtaskResult> {
   const startTime = new Date();
   const externalRef = `clickup-${ctx.subtaskId}`;
 
@@ -663,6 +759,10 @@ async function waitForTestCompletion(ctx: SubtaskContext): Promise<SubtaskResult
     // Teste completou, buscar relatório
     const report = await getTestReport(ctx.sessionId!);
     console.log(`[testes] ✅ Report recebido para ${ctx.subtaskId}`);
+
+    // Enriquecer análise com LLM (não-bloqueante em caso de falha)
+    const caseDataForEnrichment = extractCaseData(ctx.scenario.descricao);
+    const deepAnalysis = await enrichReportWithLLM(report, ctx.scenario, agentPrompt, caseDataForEnrichment);
 
     const endTime = new Date();
     const executionTimeMs = endTime.getTime() - startTime.getTime();
@@ -723,8 +823,14 @@ async function waitForTestCompletion(ctx: SubtaskContext): Promise<SubtaskResult
       summary += `\n`;
     }
 
+    if (deepAnalysis) {
+      summary += `7. ANÁLISE APROFUNDADA (IA)\n`;
+      summary += `${"-".repeat(70)}\n`;
+      summary += `${deepAnalysis}\n\n`;
+    }
+
     if (report.responseTimeAnalysis) {
-      summary += `7. ANÁLISE DE DESEMPENHO\n`;
+      summary += `8. ANÁLISE DE DESEMPENHO\n`;
       summary += `${"-".repeat(70)}\n`;
       const rtAnalysis = report.responseTimeAnalysis as Record<string, unknown>;
       for (const [key, value] of Object.entries(rtAnalysis)) {
@@ -733,7 +839,7 @@ async function waitForTestCompletion(ctx: SubtaskContext): Promise<SubtaskResult
       summary += `\n`;
     }
 
-    summary += `8. CONCLUSÃO\n`;
+    summary += `9. CONCLUSÃO\n`;
     summary += `${"-".repeat(70)}\n`;
     if (report.verdict === "APROVADO") {
       summary += `✅ Este teste foi APROVADO com sucesso.\n`;
