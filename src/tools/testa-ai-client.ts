@@ -185,20 +185,35 @@ export async function pollTestStatus(
 
 /**
  * Obtém o relatório completo de um teste.
+ * Faz retry em 404 porque o testa-ai pode levar alguns segundos para
+ * persistir o report após marcar a sessão como `completed`.
  */
 export async function getTestReport(sessionId: string): Promise<TestaAiReport> {
   const env = getEnv();
-  const res = await fetch(`${env.TESTA_AI_BASE_URL}/api/test/${sessionId}/report`, {
-    headers: env.TESTA_AI_API_KEY ? { "Authorization": `Bearer ${env.TESTA_AI_API_KEY}` } : {},
-    agent: getAgent(env.TESTA_AI_BASE_URL),
-  } as any);
+  const maxAttempts = 4;
+  const backoffMs = [2000, 4000, 8000];
 
-  if (!res.ok) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const res = await fetch(`${env.TESTA_AI_BASE_URL}/api/test/${sessionId}/report`, {
+      headers: env.TESTA_AI_API_KEY ? { "Authorization": `Bearer ${env.TESTA_AI_API_KEY}` } : {},
+      agent: getAgent(env.TESTA_AI_BASE_URL),
+    } as any);
+
+    if (res.ok) {
+      return (await res.json()) as TestaAiReport;
+    }
+
+    if (res.status === 404 && attempt < maxAttempts) {
+      const delay = backoffMs[attempt - 1]!;
+      console.warn(`[testa-ai] Report 404 para ${sessionId} (tentativa ${attempt}/${maxAttempts}), aguardando ${delay}ms`);
+      await sleep(delay);
+      continue;
+    }
+
     throw new Error(`Failed to get report: ${res.status}`);
   }
 
-  const report = (await res.json()) as TestaAiReport;
-  return report;
+  throw new Error(`Failed to get report: 404 após ${maxAttempts} tentativas`);
 }
 
 // ─── Helpers ────────────────────────────────────────────────

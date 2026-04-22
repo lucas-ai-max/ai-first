@@ -758,12 +758,18 @@ async function waitForTestCompletion(ctx: SubtaskContext, agentPrompt: string): 
   try {
     // Fazer polling até completar ou erro
     const expectedMessages = ctx.scenario.mensagens;
-    await pollTestStatus(ctx.sessionId!, externalRef, async (status) => {
+    const pollResult = await pollTestStatus(ctx.sessionId!, externalRef, async (status) => {
       console.log(`[testes] 📊 subtask=${ctx.subtaskId} status=${status.status} messagesRemaining=${status.messagesRemaining ?? "?"} expected=${expectedMessages ?? "?"}`);
       if (status.status === "running") {
         await testsUpdateTaskStatus(ctx.subtaskId, "em execução");
       }
     });
+
+    // Só há relatório quando a sessão completou. Em `error`/`stopped` o endpoint
+    // /report retorna 404, então abortamos com mensagem clara.
+    if (pollResult.status !== "completed") {
+      throw new Error(`Teste encerrado sem relatório (status: ${pollResult.status})`);
+    }
 
     // Teste completou, buscar relatório
     const report = await getTestReport(ctx.sessionId!);
