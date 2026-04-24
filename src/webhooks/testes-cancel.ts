@@ -30,7 +30,10 @@ interface CommentWebhookPayload {
   }>;
 }
 
-const CANCEL_REGEX = /(@testes[\s\S]*?#cancelar)|(#cancelar[\s\S]*?@testes)/i;
+// Aceita variações do mention (@testes, @agente de testes, @agente-de-testes)
+// desde que venha junto com #cancelar no mesmo comentário.
+const MENTION_REGEX = /@(?:testes|agente[\s\-_]+de[\s\-_]+testes)/i;
+const CANCEL_TAG_REGEX = /#cancelar/i;
 
 export async function handleTestesCancelWebhook(payload: CommentWebhookPayload): Promise<void> {
   const env = getEnv();
@@ -46,7 +49,15 @@ export async function handleTestesCancelWebhook(payload: CommentWebhookPayload):
     return;
   }
 
-  if (!CANCEL_REGEX.test(commentData.text_content)) {
+  const text = commentData.text_content ?? "";
+  const hasCancelTag = CANCEL_TAG_REGEX.test(text);
+  const hasMention = MENTION_REGEX.test(text);
+
+  if (!hasCancelTag || !hasMention) {
+    if (hasCancelTag || hasMention) {
+      // Só um dos dois — loga pra diagnóstico, não aciona
+      console.log(`[testes-cancel] Comentário parcial (mention=${hasMention}, cancel=${hasCancelTag}), ignorando. Texto: ${text.slice(0, 200)}`);
+    }
     return;
   }
 
