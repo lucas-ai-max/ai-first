@@ -43,6 +43,7 @@ interface SubtaskContext {
   parentTaskId: string;
   scenario: TestScenario;
   instance: EvolutionInstance;
+  messageCount: number;
   sessionId?: string;
 }
 
@@ -545,6 +546,7 @@ export async function runTestBattery(parentTaskId: string): Promise<void> {
         parentTaskId,
         scenario,
         instance,
+        messageCount: messagesPerConversation,
       });
     } catch (err) {
       console.error(`[testes] Erro ao criar/reusar subtask ${i + 1}:`, err);
@@ -722,10 +724,14 @@ async function dispatchTest(
   const env = getEnv();
   const caseData = extractCaseData(ctx.scenario.descricao);
 
-  const messageCount = ctx.scenario.mensagens ?? defaultMessageCount;
-  const messageCountSource = ctx.scenario.mensagens !== undefined
-    ? `scenario.mensagens (${ctx.scenario.mensagens})`
-    : `default (${defaultMessageCount})`;
+  // Sempre usa o valor do campo "Mensagens por conversa" da task-mãe (ctx.messageCount).
+  // Ignora ctx.scenario.mensagens (extraído pelo LLM do texto do cenário) pra
+  // garantir que todos os cenários usem o mesmo número, independente do que
+  // aparece na descrição ou da quantidade de instâncias.
+  const messageCount = ctx.messageCount;
+  const messageCountSource = `task-mãe "Mensagens por conversa" (${ctx.messageCount})${
+    ctx.scenario.mensagens !== undefined ? `, ignorando scenario.mensagens=${ctx.scenario.mensagens}` : ""
+  }`;
 
   const payload: TestaAiStartPayload = {
     agentWhatsappNumber,
@@ -866,13 +872,13 @@ async function waitForTestCompletion(ctx: SubtaskContext, agentPrompt: string): 
     parentTaskId: ctx.parentTaskId,
     sessionId: ctx.sessionId!,
     scenarioName: ctx.scenario.nome,
-    expectedMessages: ctx.scenario.mensagens,
+    expectedMessages: ctx.messageCount,
     startedAt: startTime.toISOString(),
   });
 
   try {
     // Fazer polling até completar ou erro
-    const expectedMessages = ctx.scenario.mensagens;
+    const expectedMessages = ctx.messageCount;
     const pollResult = await pollTestStatus(
       ctx.sessionId!,
       externalRef,
