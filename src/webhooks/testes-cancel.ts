@@ -1,4 +1,3 @@
-import { getEnv } from "../config/env.js";
 import { cancelTestsForTask } from "../agents/testes-agent.js";
 import { postComment, getClickUpToken } from "../tools/clickup-mcp.js";
 
@@ -36,8 +35,6 @@ const MENTION_REGEX = /@(?:testes|agente[\s\-_]+de[\s\-_]+testes)/i;
 const CANCEL_TAG_REGEX = /#cancelar/i;
 
 export async function handleTestesCancelWebhook(payload: CommentWebhookPayload): Promise<void> {
-  const env = getEnv();
-
   if (payload.event !== "taskCommentPosted") {
     console.log(`[testes-cancel] Evento ignorado: ${payload.event}`);
     return;
@@ -61,10 +58,8 @@ export async function handleTestesCancelWebhook(payload: CommentWebhookPayload):
     return;
   }
 
-  if (String(commentData.user.id) === env.CLICKUP_AGENT_USER_ID) {
-    console.log(`[testes-cancel] Comentário do próprio agente, ignorando.`);
-    return;
-  }
+  // Sem loop-prevention por user.id: a regex exige #cancelar + @testes/@agente de testes,
+  // combinação que o próprio bot nunca gera nas mensagens de confirmação.
 
   const taskId = payload.task_id;
   if (isDuplicate(taskId)) {
