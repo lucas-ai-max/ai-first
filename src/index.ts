@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { getEnv } from "./config/env.js";
 import { handleTriagemWebhook } from "./webhooks/triagem-comment.js";
 import { handleTestesWebhook } from "./webhooks/testes-status-change.js";
+import { handleTestesCancelWebhook } from "./webhooks/testes-cancel.js";
 
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -73,6 +74,26 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     return;
   }
 
+  // ─── Webhook: Testes Cancel ───────────────────────────────
+  if (url.pathname === "/webhook/testes-cancel" && method === "POST") {
+    let payload: unknown;
+    try {
+      const body = await readBody(req);
+      payload = JSON.parse(body);
+    } catch (err) {
+      console.error("[server] Erro ao parsear body do webhook testes-cancel:", err);
+      sendJson(res, 400, { error: "Invalid JSON" });
+      return;
+    }
+
+    sendJson(res, 200, { received: true });
+
+    handleTestesCancelWebhook(payload as Parameters<typeof handleTestesCancelWebhook>[0]).catch((err) => {
+      console.error("[server] Erro não capturado no handler de testes-cancel:", err);
+    });
+    return;
+  }
+
   // 404
   sendJson(res, 404, { error: "Not found" });
 }
@@ -95,6 +116,7 @@ async function main(): Promise<void> {
     console.log(`\n🚀 Flow IA Agents rodando na porta ${env.PORT}`);
     console.log(`   POST /webhook/triagem     → Agente Triagem`);
     console.log(`   POST /webhook/testes-status-change → Agente Testes`);
+    console.log(`   POST /webhook/testes-cancel → Cancelamento de testes (@testes #cancelar)`);
     console.log(`   GET  /health              → Health check`);
     if (env.NGROK_URL) {
       console.log(`\n🌐 ngrok: ${env.NGROK_URL}`);

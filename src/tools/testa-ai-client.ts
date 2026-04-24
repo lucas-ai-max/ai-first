@@ -78,6 +78,7 @@ export async function startTest(payload: TestaAiStartPayload): Promise<string> {
 
 /**
  * Para um teste em execução no testa-ai.
+ * 404 é tratado como sucesso (sessão já não existe mais).
  */
 export async function stopTest(sessionId: string): Promise<void> {
   const env = getEnv();
@@ -86,8 +87,9 @@ export async function stopTest(sessionId: string): Promise<void> {
     headers: env.TESTA_AI_API_KEY ? { "Authorization": `Bearer ${env.TESTA_AI_API_KEY}` } : {},
     agent: getAgent(env.TESTA_AI_BASE_URL),
   } as any);
-  if (!res.ok) {
-    console.warn(`[testa-ai] Falha ao parar sessão ${sessionId}: ${res.status}`);
+  if (!res.ok && res.status !== 404) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`Failed to stop session ${sessionId}: ${res.status} ${body}`);
   }
 }
 

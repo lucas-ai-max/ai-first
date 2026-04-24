@@ -304,6 +304,77 @@ async function testsGetSubtasks(taskId: string): Promise<ClickUpTask[]> {
   return getSubtasks(taskId, getClickUpToken(true));
 }
 
+// ─── Cancelamento de testes em andamento ─────────────────────
+
+const CANCEL_FINAL_STATUSES = new Set([
+  "aprovado",
+  "reprovado",
+  "aguardando revisão",
+  "aguardando revisao",
+  "erro",
+  "cancelado",
+]);
+
+function getSessionIdFromTask(task: ClickUpTask): string | undefined {
+  const raw = getCustomFieldValue(task, "sessão testa-ai") ??
+    getCustomFieldValue(task, "sessao testa-ai");
+  return typeof raw === "string" && raw.length > 0 ? raw : undefined;
+}
+
+/**
+ * Cancela testes em andamento de uma task. Se `taskId` é uma task-mãe, para
+ * todas as subtasks ativas; se é subtask, para apenas ela.
+ *
+ * O polling existente detecta `status === "stopped"` no testa-ai e encerra
+ * naturalmente — aqui só adiantamos o feedback visual marcando "erro".
+ */
+export async function cancelTestsForTask(taskId: string, requestedBy: string): Promise<void> {
+  const task = await testsGetTask(taskId);
+  const isParent = !task.parent;
+
+  const targetSubtasks: ClickUpTask[] = isParent
+    ? await testsGetSubtasks(taskId)
+    : [task];
+
+  const toCancel: Array<{ subtask: ClickUpTask; sessionId: string }> = [];
+  for (const subtask of targetSubtasks) {
+    if (CANCEL_FINAL_STATUSES.has(subtask.status.status.toLowerCase())) continue;
+    const sessionId = getSessionIdFromTask(subtask);
+    if (sessionId) toCancel.push({ subtask, sessionId });
+  }
+
+  if (toCancel.length === 0) {
+    await testsPostComment(taskId, `ℹ️ Nenhum teste ativo pra cancelar.`);
+    return;
+  }
+
+  await testsPostComment(
+    taskId,
+    `🛑 Cancelamento solicitado por @${requestedBy}. Parando ${toCancel.length} sessão(ões)...`,
+  );
+
+  const results = await Promise.allSettled(
+    toCancel.map(async ({ subtask, sessionId }) => {
+      await stopTest(sessionId);
+      await testsUpdateTaskStatus(subtask.id, "erro");
+      await testsPostComment(subtask.id, `🛑 Teste cancelado por @${requestedBy}.`);
+      return subtask.id;
+    }),
+  );
+
+  const stopped = results.filter((r) => r.status === "fulfilled").length;
+  const failed = results.length - stopped;
+  const failures = results
+    .map((r, i) => (r.status === "rejected" ? `${toCancel[i]!.subtask.id}: ${r.reason instanceof Error ? r.reason.message : String(r.reason)}` : null))
+    .filter((x): x is string => x !== null);
+
+  let summary = `✅ ${stopped} sessão(ões) parada(s).`;
+  if (failed > 0) {
+    summary += `\n⚠️ ${failed} falharam:\n` + failures.map((f) => `  - ${f}`).join("\n");
+  }
+  await testsPostComment(taskId, summary);
+}
+
 // ─── Main Orchestration ─────────────────────────────────────
 
 /**

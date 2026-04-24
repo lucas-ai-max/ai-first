@@ -5,11 +5,13 @@
  *   npx tsx scripts/setup-webhook.ts              # Listar, deletar antigos e criar novos
  *   npx tsx scripts/setup-webhook.ts list         # Apenas listar webhooks existentes
  *   npx tsx scripts/setup-webhook.ts delete <id>  # Deletar webhook por ID
- *   npx tsx scripts/setup-webhook.ts create       # Apenas criar novos webhooks
+ *   npx tsx scripts/setup-webhook.ts create       # Apenas criar todos os webhooks
+ *   npx tsx scripts/setup-webhook.ts add-cancel   # Criar APENAS o webhook de cancelamento
  *
  * Registra os webhooks necessários para os agentes:
  * - /webhook/triagem → taskCommentPosted na lista Bugs e Incidentes
  * - /webhook/testes-status-change → taskStatusUpdated na lista Testes e QA
+ * - /webhook/testes-cancel → taskCommentPosted na lista Testes e QA (comando @testes #cancelar)
  */
 
 import "dotenv/config";
@@ -164,7 +166,25 @@ async function main(): Promise<void> {
       description: "Agente Testes — taskStatusUpdated em Testes e QA",
     });
 
+    await createWebhook({
+      endpoint: "/webhook/testes-cancel",
+      events: ["taskCommentPosted"],
+      listId: listId_testes,
+      description: "Agente Testes — taskCommentPosted em Testes e QA (cancelamento)",
+    });
+
     console.log("\n✅ Webhooks criados com sucesso!");
+    return;
+  }
+
+  if (command === "add-cancel") {
+    await createWebhook({
+      endpoint: "/webhook/testes-cancel",
+      events: ["taskCommentPosted"],
+      listId: listId_testes,
+      description: "Agente Testes — taskCommentPosted em Testes e QA (cancelamento)",
+    });
+    console.log("\n✅ Webhook de cancelamento registrado!");
     return;
   }
 
@@ -185,6 +205,13 @@ async function main(): Promise<void> {
     events: ["taskStatusUpdated"],
     listId: listId_testes,
     description: "Agente Testes — taskStatusUpdated em Testes e QA",
+  });
+
+  await createWebhook({
+    endpoint: "/webhook/testes-cancel",
+    events: ["taskCommentPosted"],
+    listId: listId_testes,
+    description: "Agente Testes — taskCommentPosted em Testes e QA (cancelamento)",
   });
 
   console.log("\n✅ Setup completo!");
