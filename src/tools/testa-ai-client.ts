@@ -109,6 +109,7 @@ export async function pollTestStatus(
   sessionId: string,
   externalRef: string,
   onStatusChange?: (status: TestStatus) => Promise<void>,
+  onPoll?: (status: TestStatus) => void,
 ): Promise<TestStatus> {
   const env = getEnv();
   const pollIntervalMs = 60000; // Poll a cada 60s
@@ -145,6 +146,11 @@ export async function pollTestStatus(
 
       // Reset de erros consecutivos quando conseguir conectar
       consecutiveErrors = 0;
+
+      // onPoll: chamado a cada poll, independente de mudança (pra tracking em tempo real)
+      if (onPoll) {
+        try { onPoll(status); } catch { /* não interrompe o polling */ }
+      }
 
       // Chamar callback se status mudou
       if (onStatusChange && lastStatus?.status !== status.status) {

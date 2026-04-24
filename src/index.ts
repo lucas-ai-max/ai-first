@@ -4,6 +4,7 @@ import { getEnv } from "./config/env.js";
 import { handleTriagemWebhook } from "./webhooks/triagem-comment.js";
 import { handleTestesWebhook } from "./webhooks/testes-status-change.js";
 import { handleTestesCancelWebhook } from "./webhooks/testes-cancel.js";
+import { getActiveTestsSnapshot } from "./agents/testes-agent.js";
 
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -26,6 +27,21 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   // Health check
   if (url.pathname === "/health" && method === "GET") {
     sendJson(res, 200, { status: "ok", agents: ["triagem", "testes"] });
+    return;
+  }
+
+  // Status dos testes em execução
+  if (url.pathname === "/status" && method === "GET") {
+    const active = getActiveTestsSnapshot();
+    const totalMessagesRemaining = active.reduce(
+      (sum, t) => sum + (t.messagesRemaining ?? 0),
+      0,
+    );
+    sendJson(res, 200, {
+      running: active.length,
+      totalMessagesRemaining,
+      tests: active,
+    });
     return;
   }
 
@@ -118,6 +134,7 @@ async function main(): Promise<void> {
     console.log(`   POST /webhook/testes-status-change → Agente Testes`);
     console.log(`   POST /webhook/testes-cancel → Cancelamento de testes (@testes #cancelar)`);
     console.log(`   GET  /health              → Health check`);
+    console.log(`   GET  /status              → Testes em execução (quantos e msgs restantes)`);
     if (env.NGROK_URL) {
       console.log(`\n🌐 ngrok: ${env.NGROK_URL}`);
       console.log(`   Webhook triagem: ${env.NGROK_URL}/webhook/triagem`);

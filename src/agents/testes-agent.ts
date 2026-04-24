@@ -40,6 +40,7 @@ export interface EvolutionInstance {
 
 interface SubtaskContext {
   subtaskId: string;
+  parentTaskId: string;
   scenario: TestScenario;
   instance: EvolutionInstance;
   sessionId?: string;
@@ -304,6 +305,39 @@ async function testsGetSubtasks(taskId: string): Promise<ClickUpTask[]> {
   return getSubtasks(taskId, getClickUpToken(true));
 }
 
+// ─── Registry de testes em execução (in-memory) ──────────────
+
+export interface ActiveTest {
+  subtaskId: string;
+  parentTaskId: string;
+  sessionId: string;
+  scenarioName: string;
+  expectedMessages?: number;
+  startedAt: string;
+  lastStatus?: string;
+  messagesRemaining?: number;
+  lastPollAt?: string;
+}
+
+const activeTests = new Map<string, ActiveTest>();
+
+function registerActiveTest(entry: ActiveTest): void {
+  activeTests.set(entry.subtaskId, entry);
+}
+
+function updateActiveTest(subtaskId: string, patch: Partial<ActiveTest>): void {
+  const cur = activeTests.get(subtaskId);
+  if (cur) activeTests.set(subtaskId, { ...cur, ...patch });
+}
+
+function unregisterActiveTest(subtaskId: string): void {
+  activeTests.delete(subtaskId);
+}
+
+export function getActiveTestsSnapshot(): ActiveTest[] {
+  return Array.from(activeTests.values());
+}
+
 // ─── Cancelamento de testes em andamento ─────────────────────
 
 const CANCEL_FINAL_STATUSES = new Set([
@@ -508,6 +542,7 @@ export async function runTestBattery(parentTaskId: string): Promise<void> {
 
       subtaskContexts.push({
         subtaskId: subtask.id,
+        parentTaskId,
         scenario,
         instance,
       });
@@ -826,15 +861,35 @@ async function waitForTestCompletion(ctx: SubtaskContext, agentPrompt: string): 
   const startTime = new Date();
   const externalRef = `clickup-${ctx.subtaskId}`;
 
+  registerActiveTest({
+    subtaskId: ctx.subtaskId,
+    parentTaskId: ctx.parentTaskId,
+    sessionId: ctx.sessionId!,
+    scenarioName: ctx.scenario.nome,
+    expectedMessages: ctx.scenario.mensagens,
+    startedAt: startTime.toISOString(),
+  });
+
   try {
     // Fazer polling até completar ou erro
     const expectedMessages = ctx.scenario.mensagens;
-    const pollResult = await pollTestStatus(ctx.sessionId!, externalRef, async (status) => {
-      console.log(`[testes] 📊 subtask=${ctx.subtaskId} status=${status.status} messagesRemaining=${status.messagesRemaining ?? "?"} expected=${expectedMessages ?? "?"}`);
-      if (status.status === "running") {
-        await testsUpdateTaskStatus(ctx.subtaskId, "em execução");
-      }
-    });
+    const pollResult = await pollTestStatus(
+      ctx.sessionId!,
+      externalRef,
+      async (status) => {
+        console.log(`[testes] 📊 subtask=${ctx.subtaskId} status=${status.status} messagesRemaining=${status.messagesRemaining ?? "?"} expected=${expectedMessages ?? "?"}`);
+        if (status.status === "running") {
+          await testsUpdateTaskStatus(ctx.subtaskId, "em execução");
+        }
+      },
+      (status) => {
+        updateActiveTest(ctx.subtaskId, {
+          lastStatus: status.status,
+          messagesRemaining: status.messagesRemaining,
+          lastPollAt: new Date().toISOString(),
+        });
+      },
+    );
 
     // Só há relatório quando a sessão completou. Em `error`/`stopped` o endpoint
     // /report retorna 404, então abortamos com mensagem clara.
@@ -993,6 +1048,8 @@ async function waitForTestCompletion(ctx: SubtaskContext, agentPrompt: string): 
       status: "erro",
       error: errorMsg,
     };
+  } finally {
+    unregisterActiveTest(ctx.subtaskId);
   }
 }
 
