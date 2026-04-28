@@ -44,6 +44,7 @@ interface SubtaskContext {
   scenario: TestScenario;
   instance: EvolutionInstance;
   messageCount: number;
+  project?: string;
   sessionId?: string;
 }
 
@@ -306,6 +307,34 @@ async function testsGetSubtasks(taskId: string): Promise<ClickUpTask[]> {
   return getSubtasks(taskId, getClickUpToken(true));
 }
 
+// ─── Helpers de leitura de custom fields ─────────────────────
+
+/**
+ * Lê o campo "Projeto" (ou "Project") da task-mãe. Aceita:
+ * - Text field: usa o valor direto.
+ * - Dropdown: resolve o orderindex em type_config.options pra pegar o nome.
+ * Retorna undefined se vazio ou não-encontrado.
+ */
+function readProjectField(parentTask: ClickUpTask): string | undefined {
+  const field = parentTask.custom_fields.find(
+    (f) => f.name.toLowerCase() === "projeto" || f.name.toLowerCase() === "project",
+  );
+  if (!field || field.value === undefined || field.value === null) return undefined;
+
+  if (typeof field.value === "string") {
+    const trimmed = field.value.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  }
+
+  if (typeof field.value === "number" && field.type_config?.options) {
+    const option = field.type_config.options[field.value];
+    const name = option?.name?.trim() || option?.label?.trim();
+    return name && name.length > 0 ? name : undefined;
+  }
+
+  return undefined;
+}
+
 // ─── Registry de testes em execução (in-memory) ──────────────
 
 export interface ActiveTest {
@@ -452,6 +481,9 @@ export async function runTestBattery(parentTaskId: string): Promise<void> {
   const messagesPerConversation = typeof rawMessages === "number" ? rawMessages :
     typeof rawMessages === "string" ? parseInt(rawMessages, 10) : 10;
 
+  const project = readProjectField(parentTask);
+  console.log(`[testes] project field: ${project ?? "(não preenchido)"}`);
+
   // 3. Parsear e estruturar cenários + instâncias (texto livre → JSON via LLM)
   console.log(`[testes] Calling parseAndStructureFields for task ${parentTaskId}...`);
   const parsed = await parseAndStructureFields(parentTask, parentTaskId);
@@ -547,6 +579,7 @@ export async function runTestBattery(parentTaskId: string): Promise<void> {
         scenario,
         instance,
         messageCount: messagesPerConversation,
+        project,
       });
     } catch (err) {
       console.error(`[testes] Erro ao criar/reusar subtask ${i + 1}:`, err);
@@ -744,9 +777,10 @@ async function dispatchTest(
     evolutionApiKey: ctx.instance.key ?? env.EVOLUTION_API_KEY,
     openaiApiKey: env.OPENAI_API_KEY,
     ...(Object.keys(caseData).length > 0 && { caseData }),
+    ...(ctx.project && { project: ctx.project }),
   };
 
-  console.log(`[testes] 📩 Enviando pro testa-ai: messageCount=${messageCount} (fonte: ${messageCountSource}), cenario="${ctx.scenario.nome}", subtask=${ctx.subtaskId}`);
+  console.log(`[testes] 📩 Enviando pro testa-ai: messageCount=${messageCount} (fonte: ${messageCountSource}), project=${ctx.project ?? "(nenhum)"}, cenario="${ctx.scenario.nome}", subtask=${ctx.subtaskId}`);
 
   if (Object.keys(caseData).length > 0) {
     console.log(`[testes] ✅ Payload includes caseData: CPF=${caseData.cpf}, Nome=${caseData.nome}, Contrato=${caseData.contrato}`);

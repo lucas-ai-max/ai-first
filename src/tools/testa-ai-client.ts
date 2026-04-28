@@ -24,6 +24,7 @@ export interface TestaAiStartPayload {
   evolutionApiKey: string;
   openaiApiKey: string;
   caseData?: Record<string, unknown>;
+  project?: string;
 }
 
 export interface TestaAiStartResponse {
