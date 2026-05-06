@@ -30,6 +30,27 @@ const envSchema = z.object({
 
   PORT: z.coerce.number().default(3002),
   NGROK_URL: z.string().optional(),
+
+  // Reports / Daily & Weekly Flow
+  CLICKUP_REPORTS_TEAM_ID: z.string().default("9011731314"),
+  CLICKUP_REPORTS_FEATURES_LIST: z.string().default("901113643861"),
+  CLICKUP_REPORTS_TAREFAS_LIST: z.string().default("901113587340"),
+  CLICKUP_REPORTS_DOC_ID: z.string().default("8cj86vj-93731"),
+  CLICKUP_REPORTS_DAILY_PARENT_ID: z.string().default("8cj86vj-77071"),
+  CLICKUP_REPORTS_WEEKLY_PARENT_ID: z.string().default("8cj86vj-77191"),
+  CLICKUP_REPORTS_TOKEN: z.string().optional(),
+  REPORTS_ACTIVE_STATUSES: z.string().default("em execução,em revisão"),
+  REPORTS_TEAM_ALIASES: z
+    .string()
+    .default("Lucas:Lucas,Luc|Porto:Porto,Felipe|Guilherme:Guilherme,Gui|Igor:Igor,Vilas Boas|Léo:Leonardo,Leo,Léo"),
+  DAILY_CRON: z.string().default("0 9 * * 2-5"),
+  WEEKLY_CRON: z.string().default("0 9 * * 1"),
+  REPORTS_TIMEZONE: z.string().default("America/Sao_Paulo"),
+  REPORTS_ENABLED: z.coerce.boolean().default(true),
+
+  SUPABASE_URL: z.string().url().optional(),
+  SUPABASE_SERVICE_ROLE_KEY: z.string().optional(),
+  SUPABASE_METRICS_TABLE: z.string().default("metricas_diarias"),
 });
 
 export type Env = z.infer<typeof envSchema>;

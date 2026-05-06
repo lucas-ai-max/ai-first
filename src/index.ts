@@ -3,8 +3,11 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { getEnv } from "./config/env.js";
 import { handleTriagemWebhook } from "./webhooks/triagem-comment.js";
 import { handleTestesWebhook } from "./webhooks/testes-status-change.js";
-import { handleTestesCancelWebhook } from "./webhooks/testes-cancel.js";
+import { handleTestesCommentWebhook } from "./webhooks/testes-comment.js";
 import { getActiveTestsSnapshot } from "./agents/testes-agent.js";
+import { startSchedulers } from "./flows/scheduler.js";
+import { runDailyFlow } from "./flows/daily-flow.js";
+import { runWeeklyFlow } from "./flows/weekly-flow.js";
 
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -90,23 +93,40 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     return;
   }
 
-  // ─── Webhook: Testes Cancel ───────────────────────────────
+  // ─── Webhook: Testes Comment (cancel + perguntas via mention) ─
   if (url.pathname === "/webhook/testes-cancel" && method === "POST") {
     let payload: unknown;
     try {
       const body = await readBody(req);
       payload = JSON.parse(body);
     } catch (err) {
-      console.error("[server] Erro ao parsear body do webhook testes-cancel:", err);
+      console.error("[server] Erro ao parsear body do webhook testes-comment:", err);
       sendJson(res, 400, { error: "Invalid JSON" });
       return;
     }
 
     sendJson(res, 200, { received: true });
 
-    handleTestesCancelWebhook(payload as Parameters<typeof handleTestesCancelWebhook>[0]).catch((err) => {
-      console.error("[server] Erro não capturado no handler de testes-cancel:", err);
+    handleTestesCommentWebhook(payload as Parameters<typeof handleTestesCommentWebhook>[0]).catch((err) => {
+      console.error("[server] Erro não capturado no handler de testes-comment:", err);
     });
+    return;
+  }
+
+  // ─── Reports: Daily / Weekly (disparo manual) ─────────────
+  if (url.pathname === "/reports/daily/run" && method === "POST") {
+    sendJson(res, 202, { accepted: true, flow: "daily" });
+    runDailyFlow()
+      .then((r) => console.log("[server] daily-flow concluído:", r))
+      .catch((err) => console.error("[server] daily-flow falhou:", err));
+    return;
+  }
+
+  if (url.pathname === "/reports/weekly/run" && method === "POST") {
+    sendJson(res, 202, { accepted: true, flow: "weekly" });
+    runWeeklyFlow()
+      .then((r) => console.log("[server] weekly-flow concluído:", r))
+      .catch((err) => console.error("[server] weekly-flow falhou:", err));
     return;
   }
 
@@ -132,7 +152,9 @@ async function main(): Promise<void> {
     console.log(`\n🚀 Flow IA Agents rodando na porta ${env.PORT}`);
     console.log(`   POST /webhook/triagem     → Agente Triagem`);
     console.log(`   POST /webhook/testes-status-change → Agente Testes`);
-    console.log(`   POST /webhook/testes-cancel → Cancelamento de testes (@testes #cancelar)`);
+    console.log(`   POST /webhook/testes-cancel → Comentários do Agente Testes (@testes #cancelar | @testes <pergunta>)`);
+    console.log(`   POST /reports/daily/run   → Dispara Daily Flow manualmente`);
+    console.log(`   POST /reports/weekly/run  → Dispara Weekly Flow manualmente`);
     console.log(`   GET  /health              → Health check`);
     console.log(`   GET  /status              → Testes em execução (quantos e msgs restantes)`);
     if (env.NGROK_URL) {
@@ -140,6 +162,8 @@ async function main(): Promise<void> {
       console.log(`   Webhook triagem: ${env.NGROK_URL}/webhook/triagem`);
     }
     console.log("");
+
+    startSchedulers();
   });
 }
 

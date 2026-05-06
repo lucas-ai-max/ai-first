@@ -39,8 +39,9 @@ export async function getClickUpTools() {
 // ────────────────────────────────────────────────────────────
 
 const BASE_URL = "https://api.clickup.com/api/v2";
+const BASE_URL_V3 = "https://api.clickup.com/api/v3";
 
-async function clickupFetch(path: string, options: RequestInit = {}, token?: string): Promise<unknown> {
+export async function clickupFetch(path: string, options: RequestInit = {}, token?: string): Promise<unknown> {
   const env = getEnv();
   const authToken = token || env.CLICKUP_API_TOKEN;
   const res = await fetch(`${BASE_URL}${path}`, {
@@ -58,6 +59,28 @@ async function clickupFetch(path: string, options: RequestInit = {}, token?: str
   }
 
   return res.json();
+}
+
+export async function clickupFetchV3(path: string, options: RequestInit = {}, token?: string): Promise<unknown> {
+  const env = getEnv();
+  const authToken = token || env.CLICKUP_API_TOKEN;
+  const res = await fetch(`${BASE_URL_V3}${path}`, {
+    ...options,
+    headers: {
+      Authorization: authToken,
+      "Content-Type": "application/json",
+      accept: "application/json",
+      ...options.headers,
+    },
+  });
+
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`ClickUp API v3 ${res.status}: ${body}`);
+  }
+
+  const text = await res.text();
+  return text ? JSON.parse(text) : {};
 }
 
 export interface ClickUpTask {

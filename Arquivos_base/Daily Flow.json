@@ -1,0 +1,922 @@
+{
+  "name": "Daily Flow",
+  "nodes": [
+    {
+      "parameters": {
+        "jsCode": "// 1. Configuração da Equipe\nconst equipe = [\n    { alias: \"Lucas\",     match: [\"Lucas\", \"Luc\"] },\n    { alias: \"Porto\",     match: [\"Porto\", \"Felipe\"] },\n    { alias: \"Guilherme\", match: [\"Guilherme\", \"Gui\"] },\n    { alias: \"Igor\",      match: [\"Igor\", \"Vilas Boas\"] },\n    { alias: \"Léo\",       match: [\"Leonardo\", \"Leo\", \"Léo\"] }\n];\n\n// Função segura para pegar dados do item\nfunction getDados(item) {\n    return (item && item.json) ? item.json : item;\n}\n\n// Função para extrair nomes de responsáveis\nfunction extrairNomes(assignees) {\n    if (!assignees) return \"\";\n    if (typeof assignees === 'string') return assignees;\n    if (Array.isArray(assignees)) {\n        return assignees.map(u => {\n            if (typeof u === 'object' && u !== null && u.username) return u.username;\n            return String(u);\n        }).join(\", \");\n    }\n    return String(assignees);\n}\n\n// Função para gerar a Tag de Status\nfunction getStatusTag(statusRaw) {\n    const status = (typeof statusRaw === 'string' ? statusRaw : statusRaw?.status || \"\").toLowerCase();\n\n    if (['complete', 'closed', 'done', 'concluído', 'finalizado', 'fechado'].includes(status)) {\n        return \"**🟢[CONCLUÍDO]**\";\n    }\n    if (['in progress', 'fazendo', 'em progresso', 'andamento', 'executando'].includes(status)) {\n        return \"**🟣[EM PROGRESSO]**\";\n    }\n    return \"**⚪[PENDENTE]**\";\n}\n\n// 2. Recebe e Classifica os dados do nó \"Uni informações\"\nlet todosItens = [];\ntry {\n    todosItens = $items(\"Uni informações\");\n} catch (error) {\n    todosItens = $input.all(); \n}\n\nconst concluidas = todosItens.filter(item => {\n    const d = getDados(item);\n    const statusLower = (typeof d.status === 'string' ? d.status : d.status?.status || \"\").toLowerCase();\n    return (statusLower === 'complete' || statusLower === 'closed' || d.date_closed);\n});\n\nconst atrasadas = todosItens.filter(item => {\n    const d = getDados(item);\n    return d.motivo === \"Prazo Expirado\";\n});\n\nconst hoje = todosItens.filter(item => {\n    const d = getDados(item);\n    const statusLower = (typeof d.status === 'string' ? d.status : d.status?.status || \"\").toLowerCase();\n    return (d.motivo && d.motivo !== \"Prazo Expirado\" && statusLower !== 'complete' && statusLower !== 'closed');\n});\n\n// 3. Função Geradora de Texto\n// Novo parâmetro opcional: 'msgIndividualSeVazio'\nfunction gerarSecao(titulo, listaDeTarefas, mensagemSeVazio, msgIndividualSeVazio = null) {\n    let texto = `\\n### ${titulo}\\n`;\n    let encontrouAlguma = false;\n    let bufferMembros = \"\";\n\n    equipe.forEach(membro => {\n        const tarefasDaPessoa = listaDeTarefas.filter(item => {\n            const dados = getDados(item);\n            const responsaveis = extrairNomes(dados.assignees).toLowerCase();\n            return membro.match.some(termo => responsaveis.includes(termo.toLowerCase()));\n        });\n\n        // CASO 1: Tem tarefas\n        if (tarefasDaPessoa.length > 0) {\n            encontrouAlguma = true;\n            bufferMembros += `\\n**${membro.alias}:**\\n`; \n\n            tarefasDaPessoa.forEach((t) => {\n                const dados = getDados(t);\n                \n                let taskUrl = dados.url;\n                if (!taskUrl && dados.id) {\n                    taskUrl = `https://app.clickup.com/t/${dados.id}`;\n                }\n                const nomeTarefa = dados.name || \"Tarefa sem nome\";\n                const statusPrefix = getStatusTag(dados.status);\n\n                let linhaTarefa = \"\";\n                if (taskUrl) {\n                    linhaTarefa = `- ${statusPrefix} - ${nomeTarefa} ([Link](${taskUrl}))`; \n                } else {\n                    linhaTarefa = `- ${statusPrefix} - ${nomeTarefa}`;\n                }\n                bufferMembros += `${linhaTarefa}\\n`;\n            });\n        } \n        // CASO 2: Não tem tarefas, mas a seção exige mostrar todos (ex: \"Hoje\")\n        else if (msgIndividualSeVazio) {\n            encontrouAlguma = true; // Consideramos que houve conteúdo para não mostrar a msg global\n            bufferMembros += `\\n**${membro.alias}:**\\n`;\n            bufferMembros += `- ${msgIndividualSeVazio}\\n`;\n        }\n        // CASO 3: Não tem tarefas e não exige mostrar todos (ex: \"Concluídas\") -> Não faz nada\n    });\n\n    if (!encontrouAlguma) {\n        texto += `_${mensagemSeVazio || \"Nenhuma tarefa encontrada.\"}_\\n`;\n    } else {\n        texto += bufferMembros;\n    }\n\n    return texto;\n}\n\n// 4. Montagem Final\nconst dataHoje = new Date().toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' });\n\n\nconst relatorioFinal = `\n${gerarSecao(\"Tarefas Concluídas no dia anterior\", concluidas, \"Não tivemos nenhuma tarefa concluída ontem\")}\n${gerarSecao(\"Tarefas de hoje\", hoje, \"Nenhuma tarefa para hoje.\", \"Está sem demanda\")}\n${gerarSecao(\"Tarefas atrasadas\", atrasadas, \"Não temos tarefas atrasadas!\")}\n`;\n\nreturn {\n    json: {\n        data: dataHoje,\n        documentoTexto: relatorioFinal\n    }\n};"
+      },
+      "name": "Formatar Dados",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        1120,
+        -160
+      ],
+      "id": "1ec5a96c-c9ff-426a-bdbf-b21ff6bb3eab"
+    },
+    {
+      "parameters": {
+        "jsCode": "// 1. Configurações e Data\nconst ID_PASTA_MAE = \"8cj86vj-77071\"; // <--- O ID ONDE VAMOS PROCURAR O MÊS\n\nfunction getMesAnoAtual() {\n    const data = new Date();\n    const mes = data.toLocaleString('pt-BR', { month: 'long', timeZone: 'America/Sao_Paulo' });\n    const ano = data.getFullYear();\n    \n    // Garante primeira letra maiúscula e adiciona o ano (ex: \"Dezembro - 2025\")\n    const mesFormatado = mes.charAt(0).toUpperCase() + mes.slice(1);\n    return `${mesFormatado} - ${ano}`;\n}\n\nconst nomeAlvo = getMesAnoAtual(); // Ex: \"Dezembro - 2025\"\n\n// 2. Recebe os dados\nconst inputData = $input.first().json;\nconst paginasIniciais = Array.isArray(inputData) ? inputData : (inputData.pages || []);\n\n// 3. Função Recursiva para encontrar a PASTA MÃE pelo ID\nfunction encontrarPastaPorId(listaPaginas, idBuscado) {\n    if (!listaPaginas || listaPaginas.length === 0) return null;\n\n    for (const pagina of listaPaginas) {\n        // Verifica se é a pasta mãe que queremos\n        if (pagina.id === idBuscado) {\n            return pagina;\n        }\n\n        // Se não for, procura nas filhas\n        if (pagina.pages && pagina.pages.length > 0) {\n            const encontrada = encontrarPastaPorId(pagina.pages, idBuscado);\n            if (encontrada) return encontrada;\n        }\n    }\n    return null;\n}\n\n// 4. Execução da Lógica\n// PASSO A: Encontra a pasta mãe (77071) onde tudo deve ser salvo\nconst pastaMae = encontrarPastaPorId(paginasIniciais, ID_PASTA_MAE);\n\nif (!pastaMae) {\n    return {\n        json: {\n            encontrado: false,\n            mensagem: `❌ Erro Crítico: A pasta mãe fixa (ID: ${ID_PASTA_MAE}) não foi encontrada no ClickUp.`,\n            nomeBuscado: nomeAlvo\n        }\n    };\n}\n\n// PASSO B: Procura o Mês (ex: Dezembro - 2025) APENAS dentro das filhas diretas da pasta mãe\n// Isso evita pegar um \"Dezembro\" de outro ano perdido em outra pasta\nlet paginaDoMes = null;\n\nif (pastaMae.pages && pastaMae.pages.length > 0) {\n    paginaDoMes = pastaMae.pages.find(p => p.name.trim().toLowerCase() === nomeAlvo.toLowerCase());\n}\n\n// 5. Resultado Final\nif (!paginaDoMes) {\n    return {\n        json: {\n            encontrado: false,\n            // Importante: Passamos o ID da mãe para o próximo nó saber onde criar o mês\n            parentPageId: pastaMae.id, \n            docId: pastaMae.doc_id,\n            mensagem: `⚠️ Pasta \"${nomeAlvo}\" não existe dentro de (ID: ${ID_PASTA_MAE}). Precisa ser criada.`,\n            nomeBuscado: nomeAlvo\n        }\n    };\n}\n\n// Sucesso!\nreturn {\n    json: {\n        encontrado: true,\n        parentPageId: paginaDoMes.id, // O ID do Mês (onde vamos salvar a semana)\n        docId: paginaDoMes.doc_id,\n        nomePagina: paginaDoMes.name,\n        mensagem: `Sucesso! Encontrada \"${paginaDoMes.name}\" dentro da pasta mãe.`\n    }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1520,
+        -160
+      ],
+      "id": "2110b40b-0a21-43cb-9017-f59adae2149b",
+      "name": "Verifica se doc do mês existe",
+      "notes": "Verifica se o documento do mês existe"
+    },
+    {
+      "parameters": {
+        "numberInputs": 3
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        912,
+        -176
+      ],
+      "id": "90cbdb77-defa-4650-b7a5-4c53828739a5",
+      "name": "Uni informações"
+    },
+    {
+      "parameters": {
+        "url": "https://api.clickup.com/api/v3/workspaces/9011731314/docs/8cj86vj-93731/page_listing",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "clickUpOAuth2Api",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "max_page_depth",
+              "value": "-1"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        1312,
+        -160
+      ],
+      "id": "27ab5cd6-2111-4b3a-bb34-7ee94cc48395",
+      "name": "Busca documentos no clickup",
+      "credentials": {
+        "clickUpOAuth2Api": {
+          "id": "9gRtkEgXHhOBlsYK",
+          "name": "ClickUp - ADM TRIA"
+        }
+      },
+      "notes": "Busca todos os documentos do clickup do Reuniões Flow"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c533d6f5-5674-41fa-8cce-11efa4d16171",
+              "leftValue": "={{ $json.encontrado }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1712,
+        -160
+      ],
+      "id": "57e3d4e3-94a4-4e5e-905e-e3e0882689fe",
+      "name": "Verificação se documento foi encontrado",
+      "notes": "Aqui verifica se documento foi encontrado"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.clickup.com/api/v3/workspaces/9011731314/docs/{{ $item(\"0\").$node[\"Verificação se documento foi encontrado\"].json[\"docId\"] }}/pages",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "clickUpOAuth2Api",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "content_format",
+              "value": "text/md"
+            },
+            {
+              "name": "parent_page_id",
+              "value": "={{ $item(\"0\").$node[\"Verificação se documento foi encontrado\"].json[\"parentPageId\"] }}"
+            },
+            {
+              "name": "name",
+              "value": "={{ $now.format('dd/MM/yy') }}"
+            },
+            {
+              "name": "content",
+              "value": "=**Facilitador:**\n**Tempo:**\n**Presencial:**\n**Home:**\n**Avisou:**\n**Não participou:**\n\n---\n\n{{ $item(\"0\").$node[\"Formatar Dados\"].json[\"documentoTexto\"] }}\n"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        2128,
+        -336
+      ],
+      "id": "10ee552e-baa4-4407-abe5-41eecdfc48d4",
+      "name": "Cria Página dentro do documento do mês (clickup)",
+      "credentials": {
+        "clickUpOAuth2Api": {
+          "id": "9gRtkEgXHhOBlsYK",
+          "name": "ClickUp - ADM TRIA"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "709e43ae-002c-4cea-8168-9a4e9c18c872",
+              "leftValue": "={{ $json.name }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "exists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2544,
+        -336
+      ],
+      "id": "0f582df4-451e-4643-8f28-c1ad862b1713",
+      "name": "Verifica se página foi criada no clickup"
+    },
+    {
+      "parameters": {
+        "url": "=https://api.clickup.com/api/v3/workspaces/9011731314/docs/{{ $item(\"0\").$node[\"Cria Página dentro do documento do mês (clickup)\"].json[\"doc_id\"] }}/pages/{{ $item(\"0\").$node[\"Cria Página dentro do documento do mês (clickup)\"].json[\"id\"] }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "clickUpOAuth2Api",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "content_format",
+              "value": "text/md"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        2336,
+        -336
+      ],
+      "id": "871800b1-2948-455b-b8b9-a84147e10ba5",
+      "name": "Busca página criada no clickup",
+      "credentials": {
+        "clickUpOAuth2Api": {
+          "id": "9gRtkEgXHhOBlsYK",
+          "name": "ClickUp - ADM TRIA"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.clickup.com/api/v3/workspaces/9011731314/docs/8cj86vj-93731/pages",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "clickUpOAuth2Api",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "content_format",
+              "value": "text/md"
+            },
+            {
+              "name": "parent_page_id",
+              "value": "8cj86vj-77071"
+            },
+            {
+              "name": "name",
+              "value": "={{ $item(\"0\").$node[\"Verificação se documento foi encontrado\"].json[\"nomeBuscado\"] }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        1984,
+        16
+      ],
+      "id": "d9905c36-3ba0-4244-ad0c-755083e566b3",
+      "name": "Cria Documento do Mês",
+      "credentials": {
+        "clickUpOAuth2Api": {
+          "id": "9gRtkEgXHhOBlsYK",
+          "name": "ClickUp - ADM TRIA"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.clickup.com/api/v3/workspaces/9011731314/docs/{{ $item(\"0\").$node[\"Cria Documento do Mês\"].json[\"doc_id\"] }}/pages",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "clickUpOAuth2Api",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "content_format",
+              "value": "text/md"
+            },
+            {
+              "name": "parent_page_id",
+              "value": "={{ $item(\"0\").$node[\"Cria Documento do Mês\"].json[\"id\"] }}"
+            },
+            {
+              "name": "name",
+              "value": "={{ $now.format('dd/MM/yy') }}"
+            },
+            {
+              "name": "content",
+              "value": "=**Facilitador:**\n**Tempo:**\n**Presencial:**\n**Home:**\n**Avisou:**\n**Não participou:**\n\n---\n\n{{ $item(\"0\").$node[\"Formatar Dados\"].json[\"documentoTexto\"] }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        2240,
+        16
+      ],
+      "id": "56ce9f52-3f8f-4d31-9c32-c9018431f006",
+      "name": "Cria Página dentro do documento do mês (Clickup)",
+      "credentials": {
+        "clickUpOAuth2Api": {
+          "id": "9gRtkEgXHhOBlsYK",
+          "name": "ClickUp - ADM TRIA"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "709e43ae-002c-4cea-8168-9a4e9c18c872",
+              "leftValue": "={{ $json.name }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "exists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2656,
+        16
+      ],
+      "id": "6009f63c-45d2-4db5-a283-386e63519d58",
+      "name": "Verifica se página foi criada no Clickup"
+    },
+    {
+      "parameters": {
+        "url": "=https://api.clickup.com/api/v3/workspaces/9011731314/docs/{{ $item(\"0\").$node[\"Cria Página dentro do documento do mês (Clickup)\"].json[\"doc_id\"] }}/pages/{{ $item(\"0\").$node[\"Cria Página dentro do documento do mês (Clickup)\"].json[\"id\"] }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "clickUpOAuth2Api",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "content_format",
+              "value": "text/md"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        2448,
+        16
+      ],
+      "id": "ebe7fe99-888a-43cc-8b22-12cd99605240",
+      "name": "Busca página criada no Clickup",
+      "credentials": {
+        "clickUpOAuth2Api": {
+          "id": "9gRtkEgXHhOBlsYK",
+          "name": "ClickUp - ADM TRIA"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// 1. Configuração da Equipe\nconst equipe = [\n    { alias: \"Lucas\",     match: [\"Lucas\", \"Luc\"] },\n    { alias: \"Porto\",     match: [\"Porto\", \"Felipe\"] },\n    { alias: \"Guilherme\", match: [\"Guilherme\", \"Gui\"] },\n    { alias: \"Igor\",      match: [\"Igor\", \"Vilas Boas\"] },\n    { alias: \"Léo\",       match: [\"Leonardo\", \"Leo\", \"Léo\"] }\n];\n\n// 2. Pega os dados que vieram do nó \"Uni informações\"\n// Usamos $input.all() para pegar tudo que entrou neste nó\nlet tarefas = [];\ntry {\n    tarefas = $input.all().map(item => item.json);\n} catch (error) {\n    tarefas = [];\n}\n\n// 3. Inicializa contadores\nconst metricas = {};\nequipe.forEach(m => {\n    metricas[m.alias] = { \n        concluidas: 0, \n        em_progresso: 0, \n        atrasadas: 0,\n        pausadas: 0 // Novo contador para Pausadas\n    };\n});\n\n// Função auxiliar para identificar dono\nfunction identificarDono(assignees) {\n    if (!assignees) return null;\n    const responsaveis = (typeof assignees === 'string' ? assignees : JSON.stringify(assignees)).toLowerCase();\n    return equipe.find(membro => membro.match.some(termo => responsaveis.includes(termo.toLowerCase())));\n}\n\n// 4. Processa as tarefas\ntarefas.forEach(task => {\n    const dono = identificarDono(task.assignees);\n    \n    if (dono) {\n        const statusLower = String(task.status || \"\").toLowerCase();\n        \n        // A: Concluída (baseado no status ou data de fechamento)\n        if (['complete', 'closed', 'done', 'concluído', 'finalizado', 'fechado'].includes(statusLower) || task.date_closed) {\n            metricas[dono.alias].concluidas++;\n        }\n        // B: Atrasada (baseado no motivo que seus filtros criaram)\n        else if (task.motivo === \"Prazo Expirado\") {\n            metricas[dono.alias].atrasadas++;\n        }\n        // C: Pausada (Nova lógica)\n        else if (['pause', 'paused', 'pausa', 'pausado', 'on hold', 'espera'].includes(statusLower)) {\n            metricas[dono.alias].pausadas++;\n        }\n        // D: Em Progresso (todo o resto)\n        else {\n            metricas[dono.alias].em_progresso++;\n        }\n    }\n});\n\n// 5. Prepara para o Supabase\n// Gera data de hoje (YYYY-MM-DD)\nconst dataHoje = new Date().toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' }).split('/').reverse().join('-');\n\nconst linhasSupabase = Object.keys(metricas).map(nome => {\n    return {\n        json: {\n            data_registro: dataHoje,\n            membro: nome,\n            concluidas: metricas[nome].concluidas,\n            em_progresso: metricas[nome].em_progresso,\n            atrasadas: metricas[nome].atrasadas,\n            pausadas: metricas[nome].pausadas // Nova coluna para o Supabase\n        }\n    };\n});\n\nreturn linhasSupabase;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        -352
+      ],
+      "id": "0ec3110f-575e-4cb5-9793-7f0b4af36bd4",
+      "name": "Separa métricas do dia ",
+      "notes": "Separa as métricas do dia por colaboradores"
+    },
+    {
+      "parameters": {
+        "tableId": "metricas_diarias",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "data_registro",
+              "fieldValue": "={{ $json[\"data_registro\"] }}"
+            },
+            {
+              "fieldId": "membro",
+              "fieldValue": "={{ $json[\"membro\"] }}"
+            },
+            {
+              "fieldId": "concluidas",
+              "fieldValue": "={{ $json[\"concluidas\"] }}"
+            },
+            {
+              "fieldId": "em_progresso",
+              "fieldValue": "={{ $json[\"em_progresso\"] }}"
+            },
+            {
+              "fieldId": "atrasadas",
+              "fieldValue": "={{ $json[\"atrasadas\"] }}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        1328,
+        -352
+      ],
+      "id": "f7a1365c-03e3-4e8f-a2d6-27599e8857e9",
+      "name": "Adicionar métricas do dia",
+      "credentials": {
+        "supabaseApi": {
+          "id": "NdyxE9JBcIE7t90u",
+          "name": "Supabase - Tria automação"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 9 * * 2-5"
+            }
+          ]
+        }
+      },
+      "name": "Agendamento (Terça-Sex 9h)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [
+        -160,
+        -192
+      ],
+      "id": "ec16022d-11f5-48bf-ba72-305a1977e41d",
+      "notes": "Roda de Segunda a Sexta às 09:00"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Define datas para filtros\nconst agora = new Date();\nconst ontem = new Date(agora);\nontem.setDate(ontem.getDate() - 1);\n\n// Timestamp em milissegundos (Formato ClickUp)\nconst inicioHoje = new Date(agora.setHours(0,0,0,0)).getTime();\nconst inicioOntem = new Date(ontem.setHours(0,0,0,0)).getTime();\nconst fimOntem = new Date(ontem.setHours(23,59,59,999)).getTime();\n\nreturn {\n  json: {\n    inicioHoje,\n    inicioOntem,\n    fimOntem,\n    dataFormatada: agora.toLocaleDateString('pt-BR')\n  }\n};"
+      },
+      "name": "Calcular Datas",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        64,
+        -192
+      ],
+      "id": "5132752b-27e8-4327-8a16-0c1d4af454de"
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "operation": "getAll",
+        "team": "9011731314",
+        "space": "90113864081",
+        "folder": "90117283564",
+        "list": "901112427612",
+        "filters": {
+          "statuses": [
+            "in progress",
+            "to do",
+            "pause"
+          ],
+          "subtasks": false
+        }
+      },
+      "name": "Tarefas Em Progresso/Hoje",
+      "type": "n8n-nodes-base.clickUp",
+      "typeVersion": 1,
+      "position": [
+        384,
+        -352
+      ],
+      "id": "ed57fe01-6ff3-4410-af28-6b44eeb50c0c",
+      "credentials": {
+        "clickUpOAuth2Api": {
+          "id": "9gRtkEgXHhOBlsYK",
+          "name": "ClickUp - ADM TRIA"
+        }
+      },
+      "notes": "Busca o que está em andamento"
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "operation": "getAll",
+        "team": "9011731314",
+        "space": "90113864081",
+        "folder": "90117283564",
+        "list": "901112427612",
+        "filters": {
+          "statuses": [
+            "complete"
+          ]
+        }
+      },
+      "name": "Tarefas Concluídas Ontem",
+      "type": "n8n-nodes-base.clickUp",
+      "typeVersion": 1,
+      "position": [
+        384,
+        -160
+      ],
+      "id": "30bef51f-9347-4f35-bea8-997c79933944",
+      "credentials": {
+        "clickUpOAuth2Api": {
+          "id": "9gRtkEgXHhOBlsYK",
+          "name": "ClickUp - ADM TRIA"
+        }
+      },
+      "notes": "Filtra tarefas fechadas no dia anterior"
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "operation": "getAll",
+        "team": "9011731314",
+        "space": "90113864081",
+        "folder": "90117283564",
+        "list": "901112427612",
+        "filters": {
+          "statuses": [
+            "in progress",
+            "to do",
+            "pause"
+          ]
+        }
+      },
+      "name": "Tarefas Atrasadas",
+      "type": "n8n-nodes-base.clickUp",
+      "typeVersion": 1,
+      "position": [
+        384,
+        16
+      ],
+      "id": "f4a795b9-7b95-40c2-ae32-068e52b6530e",
+      "credentials": {
+        "clickUpOAuth2Api": {
+          "id": "9gRtkEgXHhOBlsYK",
+          "name": "ClickUp - ADM TRIA"
+        }
+      },
+      "notes": "Vencimento anterior a hoje e não fechadas"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Recebe as tarefas do nó anterior\nconst tarefas = $items(\"Tarefas Em Progresso/Hoje\");\n\n// --- CONFIGURAÇÃO DE DATA (FUSO BRASIL) ---\nconst now = new Date();\n\n// 1. String visual para comparação exata (ex: \"02/12/2025\")\nconst hojeString = now.toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' });\n\n// 2. Objeto Date (Meia-noite) para cálculo matemático de atraso\nconst inicioHoje = new Date(now.toLocaleDateString('en-US', { timeZone: 'America/Sao_Paulo' }));\n\n// Helper: Converte timestamp ms para String \"DD/MM/AAAA\"\nfunction dataParaStringBR(timestamp) {\n    if (!timestamp) return null;\n    return new Date(parseInt(timestamp)).toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' });\n}\n\nconst tarefasFiltradas = [];\n\nfor (const item of tarefas) {\n  const task = item.json;\n  \n  // Tratamento do Status\n  const statusObj = task.status;\n  const statusText = (statusObj && statusObj.status) ? statusObj.status : (statusObj || \"\");\n  const statusLower = statusText.toString().toLowerCase();\n  \n  // Datas\n  const startDateStr = dataParaStringBR(task.start_date);\n  const dueDateStr = dataParaStringBR(task.due_date);\n  \n  const startTimestamp = task.start_date ? parseInt(task.start_date) : null;\n  const dueTimestamp = task.due_date ? parseInt(task.due_date) : null;\n  const nowTimestamp = now.getTime();\n\n  // Responsáveis\n  const responsaveis = (task.assignees && task.assignees.length > 0)\n    ? task.assignees.map(user => user.username).join(\", \")\n    : \"Sem responsável\";\n  \n  let deveIncluir = false;\n  let motivo = \"\";\n\n  // Verifica se está atrasada (Vencimento menor que o início de hoje)\n  // Usado para filtrar Paused tasks que já deveriam estar no relatório de atrasos\n  const estaAtrasada = (dueTimestamp && dueTimestamp < inicioHoje.getTime());\n\n  // --- REGRA 1: Em Progresso (Sempre inclui) ---\n  if (['in progress', 'fazendo', 'em progresso', 'andamento'].some(s => statusLower.includes(s))) {\n    deveIncluir = true;\n    motivo = \"Em Andamento\";\n  }\n  \n  // --- REGRA 2: Pausado (Inclui APENAS se estiver \"No Prazo\") ---\n  // Se estiver atrasada, ignoramos aqui (pois já caiu no script de Atrasadas)\n  else if (['pause', 'pausado', 'espera', 'hold'].some(s => statusLower.includes(s))) {\n      if (!estaAtrasada) {\n          deveIncluir = true;\n          motivo = \"Pausado (No Prazo)\";\n      }\n  }\n\n  // --- REGRA 3: Tarefas \"A Fazer\" (To Do) ---\n  else {\n      // A: Vence HOJE?\n      if (dueDateStr === hojeString) {\n        deveIncluir = true;\n        motivo = \"Vence Hoje!\";\n      }\n      \n      // B: Começa HOJE?\n      else if (startDateStr === hojeString) {\n        deveIncluir = true;\n        motivo = \"Início Hoje\";\n      }\n\n      // C: Já deveria ter começado? (Passado do Start Date e ainda parado)\n      else if (startTimestamp && startTimestamp < nowTimestamp) {\n         deveIncluir = true;\n         motivo = \"Deveria ter iniciado\";\n      }\n  }\n\n  if (deveIncluir) {\n    tarefasFiltradas.push({\n      json: {\n        name: task.name,\n        status: statusText,\n        url: task.url,\n        assignees: responsaveis,\n        start_date: startDateStr,\n        due_date: dueDateStr,\n        motivo: motivo\n      }\n    });\n  }\n}\n\nreturn tarefasFiltradas;"
+      },
+      "name": "Filtro Inteligente (Code)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        576,
+        -352
+      ],
+      "id": "204d5e99-788c-486f-93aa-aed2707b75e1",
+      "notes": "Filtra tarefas que começam hoje ou já estão rodando"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Recebe as tarefas do nó anterior\nconst tarefas = $items(\"Tarefas Concluídas Ontem\"); \n\n// --- CONFIGURAÇÃO DE FUSO E DATA ---\nconst offsetBrasil = -3; // Fuso horário UTC-3\n\n// 1. Definir o \"AGORA\"\n// EM PRODUÇÃO: Use a linha abaixo\nlet hoje = new Date();\n\n// PARA TESTES (Descomente para simular data atual diferente)\n// hoje = new Date(\"2025-12-02T10:00:00\"); \n\n// 2. Calcular o intervalo exato de \"ONTEM\" (00:00:00 até 23:59:59)\nconst nowUTC = hoje.getTime();\nconst nowBrasil = new Date(nowUTC + (offsetBrasil * 3600 * 1000));\n\nconst ano = nowBrasil.getUTCFullYear();\nconst mes = nowBrasil.getUTCMonth();\nconst dia = nowBrasil.getUTCDate();\n\n// Cria timestamps absolutos para o início e fim de ONTEM\nconst inicioOntemMs = Date.UTC(ano, mes, dia - 1, 0, 0, 0) - (offsetBrasil * 3600 * 1000);\nconst fimOntemMs = Date.UTC(ano, mes, dia - 1, 23, 59, 59, 999) - (offsetBrasil * 3600 * 1000);\n\n// FORMATADORES DE DATA (Apenas para visualização no debug)\nconst opcoesBr = { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' };\nconst inicioLegivel = new Date(inicioOntemMs).toLocaleString('pt-BR', opcoesBr);\nconst fimLegivel = new Date(fimOntemMs).toLocaleString('pt-BR', opcoesBr);\n\nconst tarefasFiltradas = [];\n\nfor (const item of tarefas) {\n  const task = item.json;\n  \n  // --- ALTERAÇÃO PRINCIPAL ---\n  // Antes: const dataFechamentoRaw = task.date_closed || task.date_done;\n  // Agora: Pega estritamente o date_done. Se for nulo, ignora a tarefa.\n  const dataConclusaoRaw = task.date_done;\n  \n  if (!dataConclusaoRaw) continue; \n\n  const dataConclusaoMs = parseInt(dataConclusaoRaw);\n\n  // --- FILTRO MATEMÁTICO ---\n  // Verifica se a DATA DE CONCLUSÃO (trabalho feito) foi ontem\n  if (dataConclusaoMs >= inicioOntemMs && dataConclusaoMs <= fimOntemMs) {\n    \n    // Formata data da tarefa\n    const dataVisual = new Date(dataConclusaoMs).toLocaleString('pt-BR', opcoesBr);\n\n    const responsaveis = (task.assignees && task.assignees.length > 0)\n      ? task.assignees.map(user => user.username).join(\", \")\n      : \"Sem responsável\";\n\n    tarefasFiltradas.push({\n      json: {\n        name: task.name,\n        status: task.status.status,\n        url: task.url, // Certifique-se que o campo url vem do nó anterior ou monte ele aqui\n        assignees: responsaveis,\n        date_done_formatted: dataVisual, // Mudei o nome para ficar claro que é data de conclusão\n        \n        // --- DEBUG ---\n        debug_intervalo_filtro: `De ${inicioLegivel} até ${fimLegivel}`,\n        debug_data_usada: dataVisual\n      }\n    });\n  }\n}\n\nreturn tarefasFiltradas;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        592,
+        -160
+      ],
+      "id": "77a36294-f3b8-44ba-b7eb-910057898961",
+      "name": "Filtro inteligente (code)",
+      "notes": "Filtra tarefas que concluídas ontem"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Recebe as tarefas do nó anterior\nconst tarefas = $items(\"Tarefas Atrasadas\"); \n\n// --- CONFIGURAÇÃO DE DATAS (FUSO BRASIL) ---\n// 1. Pega o momento atual\nconst now = new Date();\n\n// 2. Cria um objeto Date representando o início de HOJE em SP (00:00:00)\nconst hojeString = now.toLocaleDateString('en-US', { timeZone: 'America/Sao_Paulo' });\nconst inicioHoje = new Date(hojeString); // Data de hoje à meia-noite\n\nconst tarefasFiltradas = [];\n\n// Lista de status que IGNORAMOS (não contam como atraso)\n// NOTA: Como 'pause', 'paused' e 'em espera' NÃO estão aqui, eles serão verificados.\nconst statusFinalizados = [\n    'complete', \n    'closed', \n    'done', \n    'concluído', \n    'fechado', \n    'canceled', \n    'cancelado'\n];\n\nfor (const item of tarefas) {\n  const task = item.json;\n  \n  // Normaliza o status para minúsculo para evitar erros de digitação\n  const statusObj = task.status;\n  const statusText = (statusObj && statusObj.status) ? statusObj.status : (statusObj || \"\");\n  const statusLower = statusText.toString().toLowerCase();\n\n  // 1. FILTRO DE STATUS\n  // Se estiver na lista de finalizados/cancelados, ignora.\n  // Se for \"PAUSE\", ele passa por aqui e vai checar a data abaixo.\n  if (statusFinalizados.includes(statusLower)) {\n      continue;\n  }\n\n  // Data de vencimento (em milissegundos)\n  const dueDateMs = task.due_date ? parseInt(task.due_date) : null;\n  \n  let estaAtrasada = false;\n  let dataVencimentoStr = \"Sem data\";\n\n  if (dueDateMs) {\n      // Cria data do vencimento no fuso correto\n      const vencimentoString = new Date(dueDateMs).toLocaleDateString('en-US', { timeZone: 'America/Sao_Paulo' });\n      const dataVencimento = new Date(vencimentoString); // Vencimento à meia-noite\n\n      // Formata para leitura humana (PT-BR)\n      dataVencimentoStr = new Date(dueDateMs).toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' });\n\n      // 2. FILTRO DE DATA\n      // REGRA: Vencimento é estritamente MENOR que Hoje?\n      // Ex: Vencimento (Ontem) < Hoje (Agora) = TRUE (Atrasada)\n      if (dataVencimento < inicioHoje) {\n          estaAtrasada = true;\n      }\n  }\n\n  // --- Extrair Responsáveis ---\n  const responsaveis = (task.assignees && task.assignees.length > 0)\n    ? task.assignees.map(user => user.username).join(\", \")\n    : \"Sem responsável\";\n\n  if (estaAtrasada) {\n    tarefasFiltradas.push({\n      json: {\n        name: task.name,\n        status: statusText, // Mantém o nome original (ex: \"paused\")\n        url: task.url,\n        assignees: responsaveis,\n        due_date: dataVencimentoStr,\n        motivo: \"Prazo Expirado\"\n      }\n    });\n  }\n}\n\nreturn tarefasFiltradas;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        592,
+        16
+      ],
+      "id": "d1522c26-0962-404c-b45c-4f5a2f443683",
+      "name": "Filtro Inteligente (code)",
+      "notes": "Filtra tarefas que estão atrasadas"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Formatar Dados": {
+      "main": [
+        [
+          {
+            "node": "Busca documentos no clickup",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verifica se doc do mês existe": {
+      "main": [
+        [
+          {
+            "node": "Verificação se documento foi encontrado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Uni informações": {
+      "main": [
+        [
+          {
+            "node": "Formatar Dados",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Separa métricas do dia ",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Busca documentos no clickup": {
+      "main": [
+        [
+          {
+            "node": "Verifica se doc do mês existe",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verificação se documento foi encontrado": {
+      "main": [
+        [
+          {
+            "node": "Cria Página dentro do documento do mês (clickup)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Cria Documento do Mês",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cria Página dentro do documento do mês (clickup)": {
+      "main": [
+        [
+          {
+            "node": "Busca página criada no clickup",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verifica se página foi criada no clickup": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Cria Página dentro do documento do mês (clickup)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Busca página criada no clickup": {
+      "main": [
+        [
+          {
+            "node": "Verifica se página foi criada no clickup",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cria Documento do Mês": {
+      "main": [
+        [
+          {
+            "node": "Cria Página dentro do documento do mês (Clickup)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cria Página dentro do documento do mês (Clickup)": {
+      "main": [
+        [
+          {
+            "node": "Busca página criada no Clickup",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verifica se página foi criada no Clickup": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Cria Página dentro do documento do mês (Clickup)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Busca página criada no Clickup": {
+      "main": [
+        [
+          {
+            "node": "Verifica se página foi criada no Clickup",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Separa métricas do dia ": {
+      "main": [
+        [
+          {
+            "node": "Adicionar métricas do dia",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Agendamento (Terça-Sex 9h)": {
+      "main": [
+        [
+          {
+            "node": "Calcular Datas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calcular Datas": {
+      "main": [
+        [
+          {
+            "node": "Tarefas Em Progresso/Hoje",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Tarefas Concluídas Ontem",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Tarefas Atrasadas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tarefas Em Progresso/Hoje": {
+      "main": [
+        [
+          {
+            "node": "Filtro Inteligente (Code)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tarefas Concluídas Ontem": {
+      "main": [
+        [
+          {
+            "node": "Filtro inteligente (code)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tarefas Atrasadas": {
+      "main": [
+        [
+          {
+            "node": "Filtro Inteligente (code)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filtro Inteligente (Code)": {
+      "main": [
+        [
+          {
+            "node": "Uni informações",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filtro inteligente (code)": {
+      "main": [
+        [
+          {
+            "node": "Uni informações",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Filtro Inteligente (code)": {
+      "main": [
+        [
+          {
+            "node": "Uni informações",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "7d7d56d0-84cd-46c3-911a-d1fb04ff8209",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "6a272c2f1ccc2345644d600aabe86454b2bae9fcf4444e3cbb1cc918fa788823"
+  },
+  "id": "GrQu4H4pwwSW8xFn",
+  "tags": []
+}

@@ -439,6 +439,138 @@ export async function cancelTestsForTask(taskId: string, requestedBy: string): P
   await testsPostComment(taskId, summary);
 }
 
+// ─── Resposta a perguntas via menção ─────────────────────────
+
+interface SubtaskTestInfo {
+  id: string;
+  name: string;
+  status: string;
+  sessionId?: string;
+  active?: ActiveTest;
+  reportSummary?: string;
+}
+
+interface TaskTestContext {
+  parentTaskId: string;
+  parentTaskName: string;
+  parentStatus: string;
+  totalSubtasks: number;
+  running: number;
+  completed: number;
+  errored: number;
+  awaitingReview: number;
+  subtasks: SubtaskTestInfo[];
+}
+
+async function gatherTaskTestContext(taskId: string): Promise<TaskTestContext> {
+  let task = await testsGetTask(taskId);
+  if (task.parent) {
+    task = await testsGetTask(task.parent);
+  }
+  const parentId = task.id;
+
+  const subtasks = await testsGetSubtasks(parentId);
+  const activeForTask = getActiveTestsSnapshot().filter((a) => a.parentTaskId === parentId);
+
+  let running = 0;
+  let completed = 0;
+  let errored = 0;
+  let awaitingReview = 0;
+  const subtaskInfos: SubtaskTestInfo[] = [];
+
+  for (const sub of subtasks) {
+    const status = sub.status.status.toLowerCase();
+    const sessionId = getSessionIdFromTask(sub);
+    const activeEntry = sessionId ? activeForTask.find((a) => a.subtaskId === sub.id) : undefined;
+
+    let reportSummary: string | undefined;
+    const reportRaw = getCustomFieldValue(sub, "relatório (json)") ??
+      getCustomFieldValue(sub, "relatorio (json)") ??
+      getCustomFieldValue(sub, "relatório json") ??
+      getCustomFieldValue(sub, "relatorio json");
+    if (typeof reportRaw === "string" && reportRaw.length > 0) {
+      reportSummary = reportRaw.length > 1500
+        ? reportRaw.slice(0, 1500) + "...[truncado]"
+        : reportRaw;
+    }
+
+    subtaskInfos.push({
+      id: sub.id,
+      name: sub.name,
+      status,
+      sessionId,
+      active: activeEntry,
+      reportSummary,
+    });
+
+    if (activeEntry) running++;
+    if (status === "aprovado" || status === "reprovado") completed++;
+    if (status === "erro") errored++;
+    if (status === "aguardando revisão" || status === "aguardando revisao") awaitingReview++;
+  }
+
+  return {
+    parentTaskId: parentId,
+    parentTaskName: task.name,
+    parentStatus: task.status.status,
+    totalSubtasks: subtasks.length,
+    running,
+    completed,
+    errored,
+    awaitingReview,
+    subtasks: subtaskInfos,
+  };
+}
+
+const QA_SYSTEM_INSTRUCTION = `Você responde perguntas sobre uma bateria de testes automatizados.
+Use APENAS os dados do CONTEXTO. Se algo não está no contexto, diga "não tenho essa informação".
+Responda em PT-BR, direto e conciso, sem introduções tipo "Olá!".
+Use bullets curtos quando listar subtasks. Não invente dados.`;
+
+const MAX_QA_CONTEXT_CHARS = 8000;
+
+/**
+ * Responde a uma pergunta livre sobre os testes de uma task.
+ * Coleta contexto da task (subtasks, sessões ativas, relatórios concluídos),
+ * passa pro LLM e posta a resposta como comentário.
+ */
+export async function answerTestQuestion(
+  taskId: string,
+  question: string,
+  requestedBy: string,
+): Promise<void> {
+  const context = await gatherTaskTestContext(taskId);
+
+  const contextJson = JSON.stringify(context, null, 2);
+  const contextForLLM = contextJson.length > MAX_QA_CONTEXT_CHARS
+    ? contextJson.slice(0, MAX_QA_CONTEXT_CHARS) + "\n...[contexto truncado]"
+    : contextJson;
+
+  const userPrompt = [
+    QA_SYSTEM_INSTRUCTION,
+    "",
+    "CONTEXTO:",
+    contextForLLM,
+    "",
+    `PERGUNTA (de @${requestedBy}):`,
+    question,
+    "",
+    "Sua resposta:",
+  ].join("\n");
+
+  console.log(`[testes] 🧠 Respondendo pergunta na task ${taskId} (contexto ${contextForLLM.length} chars)`);
+  const agent = getTestesAgent();
+  const response = await agent.generate(userPrompt);
+  const answer = (typeof response.text === "string" ? response.text : String(response.text)).trim();
+
+  if (!answer) {
+    await testsPostComment(taskId, "Não consegui formular uma resposta. Tenta reformular a pergunta.");
+    return;
+  }
+
+  await testsPostComment(taskId, answer);
+}
+
 // ─── Main Orchestration ─────────────────────────────────────
 
 /**
