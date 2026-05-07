@@ -8,6 +8,7 @@ export interface ReportTask {
   status?: string | { status?: string; color?: string };
   status_color?: string;
   assignees?: unknown;
+  start_date?: string | null;
   due_date?: string | null;
   date_created_ms?: number;
 }
@@ -135,12 +136,51 @@ function buildTaskUrl(task: ReportTask): string | undefined {
   return undefined;
 }
 
+function formatDataDM(ms: string | null | undefined): string {
+  if (!ms) return "";
+  const n = Number(ms);
+  if (!Number.isFinite(n)) return "";
+  const fmt = new Intl.DateTimeFormat("pt-BR", {
+    timeZone: "America/Sao_Paulo",
+    day: "2-digit",
+    month: "2-digit",
+  });
+  return fmt.format(new Date(n));
+}
+
+function formatJanela(t: ReportTask): string {
+  const inicio = formatDataDM(t.start_date);
+  const termino = formatDataDM(t.due_date);
+  if (!inicio && !termino) return "";
+  if (inicio && termino) return `${inicio} → ${termino}`;
+  if (termino) return `→ ${termino}`;
+  return `${inicio} →`;
+}
+
+function isTerminalStatus(t: ReportTask): boolean {
+  const name = statusToString(t.status).toLowerCase();
+  return STATUS_TERMINAIS.has(name);
+}
+
+function isOverdue(t: ReportTask, now: Date): boolean {
+  if (isTerminalStatus(t)) return false;
+  if (!t.due_date) return false;
+  const due = Number(t.due_date);
+  if (!Number.isFinite(due)) return false;
+  return due < getInicioDiaMs(now);
+}
+
 function formatLinhaTarefa(t: ReportTask, now: Date): string {
   const url = buildTaskUrl(t);
   const nome = t.name || "Tarefa sem nome";
   const link = url ? `[${nome}](${url})` : nome;
+  const partes: string[] = [link];
+  const janela = formatJanela(t);
+  if (janela) partes.push(janela);
   const tempo = formatTempoRelativo(t.date_created_ms, now);
-  return tempo ? `${link} — ${tempo}` : link;
+  if (tempo) partes.push(tempo);
+  const flag = isOverdue(t, now) ? "⚠️ " : "";
+  return flag + partes.join(" — ");
 }
 
 // ─── Datas ────────────────────────────────────────────────

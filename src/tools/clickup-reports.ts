@@ -11,6 +11,7 @@ interface RawClickUpTask {
   date_created?: string | null;
   date_done?: string | null;
   date_closed?: string | null;
+  start_date?: string | null;
   due_date?: string | null;
 }
 
@@ -87,6 +88,7 @@ function toReportTask(t: RawClickUpTask, statusOverride?: string, colorOverride?
     status_color: colorOverride ?? statusColor(t.status),
     assignees: assigneesToString(t.assignees),
     date_created_ms: t.date_created ? parseInt(t.date_created, 10) : undefined,
+    start_date: t.start_date ?? null,
     due_date: t.due_date ?? null,
   };
 }
