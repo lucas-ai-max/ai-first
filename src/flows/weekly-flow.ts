@@ -1,5 +1,8 @@
 import { getEnv } from "../config/env.js";
-import { fetchFeatures, fetchTarefas } from "../tools/clickup-reports.js";
+import {
+  fetchFeaturesClosedLastWeek,
+  fetchTarefasClosedLastWeek,
+} from "../tools/clickup-reports.js";
 import { ensureMonthPage, createReportPage, findChildPageByName } from "../tools/clickup-docs.js";
 import { montarMarkdownWeekly } from "../reports/format.js";
 
@@ -41,8 +44,13 @@ export async function runWeeklyFlow(now: Date = new Date()): Promise<WeeklyFlowR
   const pageName = formatPageName(now, tz);
   console.log(`[weekly-flow] iniciando (página "${pageName}", intervalo ${intervaloLabel})`);
 
-  const [features, tarefas] = await Promise.all([fetchFeatures(), fetchTarefas()]);
-  console.log(`[weekly-flow] features=${features.length}, tarefas=${tarefas.length}`);
+  const [features, tarefas] = await Promise.all([
+    fetchFeaturesClosedLastWeek(),
+    fetchTarefasClosedLastWeek(),
+  ]);
+  console.log(
+    `[weekly-flow] concluídas na semana: features=${features.length}, tarefas=${tarefas.length}`,
+  );
 
   const markdown = montarMarkdownWeekly({ features, tarefas, intervaloLabel, now });
   console.log(`[weekly-flow] markdown built (${markdown.length} chars)`);
