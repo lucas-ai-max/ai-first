@@ -1,4 +1,4 @@
-import { getEquipe, extrairNomesAssignees } from "./team.js";
+import { getEquipe, extrairNomesAssignees, identificarDono } from "./team.js";
 import type { TeamMember } from "./team.js";
 
 export interface ReportTask {
@@ -12,6 +12,9 @@ export interface ReportTask {
   date_created_ms?: number;
 }
 
+// ─── Status helpers ───────────────────────────────────────
+const TZ_OFFSET_HOURS = -3; // BRT
+
 function statusToString(s: ReportTask["status"]): string {
   if (!s) return "";
   if (typeof s === "string") return s;
@@ -24,7 +27,12 @@ function statusToColor(s: ReportTask["status"], fallback?: string): string | und
   return fallback;
 }
 
-// ─── Color → emoji ─────────────────────────────────────────
+function capitalizar(s: string): string {
+  if (!s) return s;
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+// ─── Color → emoji (HSL) ──────────────────────────────────
 function hexToHsl(hex: string): [number, number, number] {
   const cleaned = hex.replace("#", "");
   const m = cleaned.length === 3
@@ -58,7 +66,7 @@ function hexToHsl(hex: string): [number, number, number] {
 function colorToEmoji(hex?: string): string {
   if (!hex) return "⚪";
   const [h, s, l] = hexToHsl(hex);
-  if (s < 0.15) return "⚪"; // cinza/branco
+  if (s < 0.15) return "⚪";
   if (l < 0.15) return "⚫";
   if (h < 20 || h >= 340) return "🔴";
   if (h < 50) return "🟠";
@@ -88,12 +96,12 @@ const STATUS_NAME_OVERRIDE: Record<string, string> = {
   finalizado: "🟢",
   backlog: "⚪",
   "to do": "⚪",
-  pause: "⚪",
-  paused: "⚪",
-  pausa: "⚪",
-  pausado: "⚪",
-  "on hold": "⚪",
-  "em espera": "⚪",
+  pause: "⏸️",
+  paused: "⏸️",
+  pausa: "⏸️",
+  pausado: "⏸️",
+  "on hold": "⏸️",
+  "em espera": "⏸️",
 };
 
 function statusEmoji(name: string, color?: string): string {
@@ -102,7 +110,7 @@ function statusEmoji(name: string, color?: string): string {
   return colorToEmoji(color);
 }
 
-// ─── Tempo relativo ────────────────────────────────────────
+// ─── Tempo relativo ───────────────────────────────────────
 function formatTempoRelativo(dateMs: number | undefined, now: Date = new Date()): string {
   if (!dateMs || Number.isNaN(dateMs)) return "";
   const diff = now.getTime() - dateMs;
@@ -121,47 +129,6 @@ function formatTempoRelativo(dateMs: number | undefined, now: Date = new Date())
   return anos === 1 ? "há ~1 ano" : `há ~${anos} anos`;
 }
 
-// ─── Membros ───────────────────────────────────────────────
-function nomesMembros(assignees: unknown): string {
-  const equipe = getEquipe();
-  const responsaveis = extrairNomesAssignees(assignees).toLowerCase();
-  if (!responsaveis) return "Sem responsável";
-  const matches = equipe.filter((m) =>
-    m.match.some((termo) => responsaveis.includes(termo.toLowerCase())),
-  );
-  if (matches.length > 0) return matches.map((m) => m.alias).join(" + ");
-  return extrairNomesAssignees(assignees);
-}
-
-// ─── Agrupamento por status ────────────────────────────────
-const STATUS_ORDER = [
-  "em execução",
-  "em execucao",
-  "in progress",
-  "em revisão",
-  "em revisao",
-  "review",
-  "concluída",
-  "concluida",
-  "concluído",
-  "concluido",
-  "complete",
-  "closed",
-  "done",
-  "backlog",
-  "to do",
-  "pause",
-  "paused",
-  "pausado",
-  "on hold",
-  "em espera",
-];
-
-function statusOrderIndex(name: string): number {
-  const idx = STATUS_ORDER.indexOf(name.trim().toLowerCase());
-  return idx === -1 ? STATUS_ORDER.length + 1 : idx;
-}
-
 function buildTaskUrl(task: ReportTask): string | undefined {
   if (task.url) return task.url;
   if (task.id) return `https://app.clickup.com/t/${task.id}`;
@@ -173,8 +140,40 @@ function formatLinhaTarefa(t: ReportTask, now: Date): string {
   const nome = t.name || "Tarefa sem nome";
   const link = url ? `[${nome}](${url})` : nome;
   const tempo = formatTempoRelativo(t.date_created_ms, now);
-  const sufixoTempo = tempo ? ` — ${tempo}` : "";
-  return `**${nomesMembros(t.assignees)}** — ${link}${sufixoTempo}`;
+  return tempo ? `${link} — ${tempo}` : link;
+}
+
+// ─── Datas ────────────────────────────────────────────────
+function getInicioDiaMs(date: Date): number {
+  const localMs = date.getTime() + TZ_OFFSET_HOURS * 3600 * 1000;
+  const ymd = new Date(localMs).toISOString().slice(0, 10);
+  const [y, m, d] = ymd.split("-").map(Number);
+  return Date.UTC(y as number, (m as number) - 1, d as number) - TZ_OFFSET_HOURS * 3600 * 1000;
+}
+
+// ─── Daily: agrupa por pessoa, dentro por status real ────
+const STATUS_ORDER = [
+  "concluída ontem",
+  "em execução",
+  "em execucao",
+  "in progress",
+  "em revisão",
+  "em revisao",
+  "review",
+  "backlog",
+  "to do",
+  "pause",
+  "paused",
+  "pausado",
+];
+
+function statusOrderIndex(name: string): number {
+  const idx = STATUS_ORDER.indexOf(name.trim().toLowerCase());
+  return idx === -1 ? STATUS_ORDER.length + 1 : idx;
+}
+
+function tarefasDoMembro(tasks: ReportTask[], membro: TeamMember): ReportTask[] {
+  return tasks.filter((t) => identificarDono(t.assignees)?.alias === membro.alias);
 }
 
 interface StatusGroup {
@@ -201,20 +200,121 @@ function agruparPorStatus(tasks: ReportTask[]): StatusGroup[] {
   );
 }
 
-function gerarBlocoPorLista(titulo: string, tasks: ReportTask[], now: Date): string {
-  if (tasks.length === 0) return "";
-  let buf = `\n## ${titulo}\n`;
-  const grupos = agruparPorStatus(tasks);
-  for (const grupo of grupos) {
-    buf += `\n### ${grupo.emoji} ${grupo.statusName}\n`;
-    for (const t of grupo.tasks) {
-      buf += `- ${formatLinhaTarefa(t, now)}\n`;
+function gerarBlocoDailyPorMembro(tasks: ReportTask[], now: Date): string {
+  const equipe = getEquipe();
+  let buf = "";
+  for (const membro of equipe) {
+    const minhas = tarefasDoMembro(tasks, membro);
+    if (minhas.length === 0) continue;
+    buf += `\n## ${membro.alias}\n`;
+    const grupos = agruparPorStatus(minhas);
+    for (const grupo of grupos) {
+      buf += `\n**${grupo.emoji} ${capitalizar(grupo.statusName)}**\n`;
+      for (const t of grupo.tasks) {
+        buf += `- ${formatLinhaTarefa(t, now)}\n`;
+      }
     }
   }
-  return buf;
+  return buf || "\n_Nada em andamento no momento._\n";
 }
 
-// ─── Templates ─────────────────────────────────────────────
+// ─── Weekly: agrupa por pessoa, dentro por categoria ─────
+type WeeklyCategory =
+  | "concluidas-semana"
+  | "em-execucao-revisao"
+  | "programadas-semana"
+  | "atrasadas"
+  | "pausadas"
+  | "outras";
+
+const WEEKLY_CATEGORIAS: Array<{ key: WeeklyCategory; emoji: string; label: string }> = [
+  { key: "concluidas-semana", emoji: "🟢", label: "Concluídas na semana passada" },
+  { key: "em-execucao-revisao", emoji: "🟡", label: "Em execução / revisão" },
+  { key: "programadas-semana", emoji: "📅", label: "Programadas para esta semana" },
+  { key: "atrasadas", emoji: "🔴", label: "Atrasadas" },
+  { key: "pausadas", emoji: "⏸️", label: "Pausadas" },
+];
+
+const STATUS_TERMINAIS = new Set([
+  "concluída",
+  "concluida",
+  "concluído",
+  "concluido",
+  "concluída ontem",
+  "concluída na semana",
+  "complete",
+  "closed",
+  "done",
+  "fechado",
+  "finalizado",
+]);
+
+const STATUS_PAUSADOS = new Set([
+  "pause",
+  "paused",
+  "pausa",
+  "pausado",
+  "on hold",
+  "em espera",
+]);
+
+const STATUS_EXEC_REV = new Set([
+  "em execução",
+  "em execucao",
+  "in progress",
+  "fazendo",
+  "em revisão",
+  "em revisao",
+  "review",
+]);
+
+function categorizarWeekly(t: ReportTask, now: Date): WeeklyCategory {
+  const name = statusToString(t.status).toLowerCase();
+  if (STATUS_TERMINAIS.has(name)) return "concluidas-semana";
+  if (STATUS_PAUSADOS.has(name)) return "pausadas";
+  const inicioHojeMs = getInicioDiaMs(now);
+  const fimSemanaMs = inicioHojeMs + 7 * 24 * 3600 * 1000;
+  const dueMs = t.due_date ? Number(t.due_date) : null;
+  const isOverdue = dueMs !== null && Number.isFinite(dueMs) && dueMs < inicioHojeMs;
+  if (isOverdue) return "atrasadas";
+  if (STATUS_EXEC_REV.has(name)) return "em-execucao-revisao";
+  if (dueMs !== null && Number.isFinite(dueMs) && dueMs >= inicioHojeMs && dueMs <= fimSemanaMs) {
+    return "programadas-semana";
+  }
+  return "outras";
+}
+
+function gerarBlocoWeeklyPorMembro(tasks: ReportTask[], now: Date): string {
+  const equipe = getEquipe();
+  let buf = "";
+  for (const membro of equipe) {
+    const minhas = tarefasDoMembro(tasks, membro);
+    if (minhas.length === 0) continue;
+
+    const porCat = new Map<WeeklyCategory, ReportTask[]>();
+    for (const t of minhas) {
+      const cat = categorizarWeekly(t, now);
+      if (cat === "outras") continue;
+      const arr = porCat.get(cat) ?? [];
+      arr.push(t);
+      porCat.set(cat, arr);
+    }
+    if (porCat.size === 0) continue;
+
+    buf += `\n## ${membro.alias}\n`;
+    for (const { key, emoji, label } of WEEKLY_CATEGORIAS) {
+      const arr = porCat.get(key);
+      if (!arr?.length) continue;
+      buf += `\n**${emoji} ${label}**\n`;
+      for (const t of arr) {
+        buf += `- ${formatLinhaTarefa(t, now)}\n`;
+      }
+    }
+  }
+  return buf || "\n_Nada relevante na semana._\n";
+}
+
+// ─── Templates ────────────────────────────────────────────
 export interface ReportMarkdownInput {
   features: ReportTask[];
   tarefas: ReportTask[];
@@ -225,11 +325,8 @@ const CABECALHO_DAILY = `**Facilitador:**\n**Tempo:**\n**Presencial:**\n**Home:*
 
 export function montarMarkdownDaily(input: ReportMarkdownInput): string {
   const now = input.now ?? new Date();
-  const blocos = [
-    gerarBlocoPorLista("🚀 Features", input.features, now),
-    gerarBlocoPorLista("🔧 Tarefas", input.tarefas, now),
-  ].filter(Boolean);
-  const corpo = blocos.length > 0 ? blocos.join("\n") : "\n_Nada em andamento no momento._\n";
+  const todas = [...input.features, ...input.tarefas];
+  const corpo = gerarBlocoDailyPorMembro(todas, now);
   return `${CABECALHO_DAILY}${corpo}\n`;
 }
 
@@ -239,12 +336,9 @@ export interface WeeklyMarkdownInput extends ReportMarkdownInput {
 
 export function montarMarkdownWeekly(input: WeeklyMarkdownInput): string {
   const now = input.now ?? new Date();
-  const cabecalho = `**Período:** ${input.intervaloLabel}\n**Facilitador:**\n**Tempo:**\n\n---\n`;
-  const blocos = [
-    gerarBlocoPorLista("🚀 Features", input.features, now),
-    gerarBlocoPorLista("🔧 Tarefas", input.tarefas, now),
-  ].filter(Boolean);
-  const corpo = blocos.length > 0 ? blocos.join("\n") : "\n_Nada em andamento no momento._\n";
+  const cabecalho = `**Período da semana passada:** ${input.intervaloLabel}\n**Facilitador:**\n**Tempo:**\n\n---\n`;
+  const todas = [...input.features, ...input.tarefas];
+  const corpo = gerarBlocoWeeklyPorMembro(todas, now);
   return `${cabecalho}${corpo}\n`;
 }
 

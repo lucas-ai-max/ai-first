@@ -149,3 +149,19 @@ export async function fetchFeaturesClosedLastWeek(): Promise<ReportTask[]> {
 export async function fetchTarefasClosedLastWeek(): Promise<ReportTask[]> {
   return fetchClosedLastWeek(getEnv().CLICKUP_REPORTS_TAREFAS_LIST);
 }
+
+// Wrappers usados pelo weekly: open atuais + concluídas semana passada,
+// pra a categorização (atrasadas, pausadas, programadas, etc) acontecer no format.
+export async function fetchFeaturesWeekly(): Promise<ReportTask[]> {
+  const env = getEnv();
+  const listId = env.CLICKUP_REPORTS_FEATURES_LIST;
+  const [open, closed] = await Promise.all([fetchOpenTasks(listId), fetchClosedLastWeek(listId)]);
+  return [...open, ...closed];
+}
+
+export async function fetchTarefasWeekly(): Promise<ReportTask[]> {
+  const env = getEnv();
+  const listId = env.CLICKUP_REPORTS_TAREFAS_LIST;
+  const [open, closed] = await Promise.all([fetchOpenTasks(listId), fetchClosedLastWeek(listId)]);
+  return [...open, ...closed];
+}
