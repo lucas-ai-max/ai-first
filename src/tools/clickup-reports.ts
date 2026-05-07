@@ -6,7 +6,7 @@ interface RawClickUpTask {
   id: string;
   name: string;
   url?: string;
-  status?: { status?: string } | string;
+  status?: { status?: string; color?: string } | string;
   assignees?: Array<{ id?: number; username?: string }>;
   date_created?: string | null;
   due_date?: string | null;
@@ -46,6 +46,11 @@ function statusText(s: RawClickUpTask["status"]): string {
   return s.status ?? "";
 }
 
+function statusColor(s: RawClickUpTask["status"]): string | undefined {
+  if (!s || typeof s === "string") return undefined;
+  return s.color;
+}
+
 function assigneesToString(arr: RawClickUpTask["assignees"]): string {
   if (!arr || arr.length === 0) return "";
   return arr.map((u) => u?.username ?? "").filter(Boolean).join(", ");
@@ -57,6 +62,7 @@ function toReportTask(t: RawClickUpTask): ReportTask {
     name: t.name,
     url: t.url,
     status: statusText(t.status),
+    status_color: statusColor(t.status),
     assignees: assigneesToString(t.assignees),
     date_created_ms: t.date_created ? parseInt(t.date_created, 10) : undefined,
     due_date: t.due_date ?? null,
