@@ -39,7 +39,7 @@ const envSchema = z.object({
   CLICKUP_REPORTS_DAILY_PARENT_ID: z.string().default("8cj86vj-77071"),
   CLICKUP_REPORTS_WEEKLY_PARENT_ID: z.string().default("8cj86vj-77191"),
   CLICKUP_REPORTS_TOKEN: z.string().optional(),
-  REPORTS_ACTIVE_STATUSES: z.string().default("em execução,em revisão,backlog,pausado,concluída"),
+  REPORTS_ACTIVE_STATUSES: z.string().default(""),
   REPORTS_TEAM_ALIASES: z
     .string()
     .default("Lucas:Lucas,Luc|Porto:Porto,Felipe|Guilherme:Guilherme,Gui|Igor:Igor,Vilas Boas|Léo:Leonardo,Leo,Léo"),

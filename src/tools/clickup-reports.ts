@@ -34,7 +34,9 @@ function activeStatuses(): string[] {
 
 async function fetchActiveTasksFromList(listId: string): Promise<RawClickUpTask[]> {
   const statuses = activeStatuses();
-  const qs = [buildStatusQuery(statuses), "subtasks=false", "include_closed=false"].join("&");
+  const parts = ["subtasks=false", "include_closed=true", "archived=false"];
+  if (statuses.length > 0) parts.unshift(buildStatusQuery(statuses));
+  const qs = parts.join("&");
   const path = `/list/${listId}/task?${qs}`;
   const data = (await clickupFetch(path, { method: "GET" }, getReportsToken())) as RawListResponse;
   return Array.isArray(data?.tasks) ? data.tasks : [];
