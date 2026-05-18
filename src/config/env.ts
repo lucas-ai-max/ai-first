@@ -43,8 +43,8 @@ const envSchema = z.object({
   REPORTS_TEAM_ALIASES: z
     .string()
     .default("Lucas:Lucas,Luc|Porto:Porto,Felipe|Guilherme:Guilherme,Gui|Igor:Igor,Vilas Boas|Léo:Leonardo,Leo,Léo"),
-  DAILY_CRON: z.string().default("0 9 * * 2-5"),
-  WEEKLY_CRON: z.string().default("0 9 * * 1"),
+  DAILY_CRON: z.string().default("30 8 * * 2-5"),
+  WEEKLY_CRON: z.string().default("30 8 * * 1"),
   REPORTS_TIMEZONE: z.string().default("America/Sao_Paulo"),
   REPORTS_ENABLED: z.coerce.boolean().default(true),
 
